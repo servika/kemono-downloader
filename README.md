@@ -17,7 +17,7 @@ A Node.js application for downloading posts and images from kemono.cr profiles w
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-username/kemono-downloader.git
+git clone https://github.com/servika/kemono-downloader.git
 cd kemono-downloader
 ```
 

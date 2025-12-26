@@ -25,12 +25,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-username/kemono-downloader.git"
+    "url": "git+https://github.com/servika/kemono-downloader.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/kemono-downloader/issues"
+    "url": "https://github.com/servika/kemono-downloader/issues"
   },
-  "homepage": "https://github.com/your-username/kemono-downloader#readme",
+  "homepage": "https://github.com/servika/kemono-downloader#readme",
   "keywords": [
     "kemono",
     "downloader",
@@ -39,5 +39,5 @@
     "patreon",
     "fanbox"
   ],
-  "author": "Your Name"
+  "author": "Serg"
 }
