@@ -8,6 +8,7 @@ const { getImageName } = require('./utils/urlUtils');
 const { downloadImage, savePostMetadata, saveHtmlContent, readProfilesFile } = require('./utils/fileUtils');
 const { fetchPage, fetchPostsFromAPI, fetchPostFromAPI } = require('./api/kemonoApi');
 const { extractImagesFromPostData, extractImagesFromHTML } = require('./extractors/imageExtractor');
+const { extractPostsFromProfileHTML, extractMediaFromPostHTML, extractPostMetadataFromHTML, extractUsernameFromProfile } = require('./extractors/htmlParser');
 const { isPostAlreadyDownloaded, getDownloadStatus, verifyAllImagesDownloaded } = require('./utils/downloadChecker');
 const ConcurrentDownloader = require('./utils/concurrentDownloader');
 const config = require('./utils/config');
@@ -29,26 +30,43 @@ class KemonoDownloader {
   async initialize() {
     await config.load();
     this.baseDir = config.getBaseDirectory();
+    this.htmlOnlyMode = config.get('htmlOnlyMode', false);
     console.log(`📁 Base directory: ${this.baseDir}`);
     console.log(`⚡ Max concurrent images: ${config.getMaxConcurrentImages()}`);
     console.log(`⏱️  Image delay: ${config.getImageDelay()}ms`);
+    if (this.htmlOnlyMode) {
+      console.log(`🌐 HTML-only mode: ENABLED (API will be skipped)`);
+    }
   }
 
   async getProfilePosts(profileUrl) {
     console.log(`  🔍 Analyzing profile for posts...`);
     const userInfo = extractUserInfo(profileUrl);
-    
-    // Try API first, then fallback to HTML scraping
+
+    // Try browser HTML scraping first
+    console.log(`  🌐 Trying browser HTML scraping...`);
+    const htmlPosts = await this.getProfilePostsFromHTML(profileUrl);
+
+    if (htmlPosts.length > 0) {
+      console.log(`  ✅ Found ${htmlPosts.length} posts via HTML scraping`);
+      return htmlPosts;
+    }
+
+    // Skip API if in HTML-only mode
+    if (this.htmlOnlyMode) {
+      console.log(`  ⚠️  HTML scraping found no posts (API skipped - HTML-only mode)`);
+      return [];
+    }
+
+    console.log(`  ⚠️  HTML scraping failed, trying API fallback...`);
     console.log(`  🔌 Trying API endpoint for user ${userInfo.userId}...`);
     const apiPosts = await fetchPostsFromAPI(userInfo.service, userInfo.userId, (msg) => console.log(`    ${msg}`));
-    
+
     if (apiPosts.length > 0) {
       console.log(`  ✅ Found ${apiPosts.length} posts via API`);
-      return apiPosts;
     }
-    
-    console.log(`  ⚠️  API failed, trying HTML scraping fallback...`);
-    return await this.getProfilePostsFromHTML(profileUrl);
+
+    return apiPosts;
   }
 
   async getProfilePostsFromHTML(profileUrl) {
@@ -59,14 +77,7 @@ class KemonoDownloader {
     }
 
     const $ = cheerio.load(html);
-    const posts = [];
     const userInfo = extractUserInfo(profileUrl);
-
-    // Extract username from page using improved extraction
-    userInfo.profileUrl = profileUrl;
-    const username = extractProfileName($, userInfo);
-
-    console.log(`  👤 Found user: ${username}`);
 
     // Check if this is a SPA (Single Page Application)
     const bodyText = $('body').text().substring(0, 500);
@@ -79,58 +90,17 @@ class KemonoDownloader {
       return [];
     }
 
-    console.log(`  🔍 Debug: HTML length: ${html.length} characters`);
-    console.log(`  🔍 Debug: All links count: ${$('a').length}`);
-    
-    // Try multiple selectors to find posts
-    const postSelectors = [
-      'article.post-card',
-      '.post-card', 
-      'article',
-      '.card',
-      '[href*="/post/"]',
-      'a[href*="/post/"]'
-    ];
+    // Use enhanced HTML parser
+    const posts = extractPostsFromProfileHTML($, profileUrl);
 
-    let postsFound = false;
+    // Extract username from page
+    const username = extractUsernameFromProfile($, profileUrl);
+    console.log(`  👤 Found user: ${username}`);
 
-    for (const selector of postSelectors) {
-      const elements = $(selector);
-      
-      if (elements.length > 0) {
-        console.log(`  🔍 Found ${elements.length} elements with selector: ${selector}`);
-        elements.each((index, element) => {
-          const $element = $(element);
-          
-          // Try different ways to find post links
-          let postLink = null;
-          
-          if ($element.is('a')) {
-            postLink = $element.attr('href');
-          } else {
-            postLink = $element.find('a').first().attr('href') || 
-                      $element.find('[href*="/post/"]').first().attr('href');
-          }
-          
-          if (postLink && postLink.includes('/post/')) {
-            const fullPostUrl = postLink.startsWith('http') ? postLink : `https://kemono.cr${postLink}`;
-            const postId = this.extractPostId(fullPostUrl);
-            
-            posts.push({
-              url: fullPostUrl,
-              id: postId,
-              username: username
-            });
-            postsFound = true;
-          }
-        });
-        
-        if (postsFound) {
-          console.log(`  ✅ Successfully found posts using selector: ${selector}`);
-          break;
-        }
-      }
-    }
+    // Add username to all posts
+    posts.forEach(post => {
+      post.username = username;
+    });
 
     console.log(`  📋 Found ${posts.length} posts to download`);
     return posts;
@@ -144,9 +114,9 @@ class KemonoDownloader {
   async downloadPost(post, postIndex, totalPosts) {
     console.log(`\n📄 [${postIndex + 1}/${totalPosts}] Processing post: ${post.id}`);
     console.log(`  🔗 URL: ${post.url}`);
-    
+
     const postDir = path.join(this.baseDir, post.username, post.id);
-    
+
     // First, check if we should skip this post
     const quickCheck = await getDownloadStatus(postDir);
     if (quickCheck === 'completed') {
@@ -158,13 +128,64 @@ class KemonoDownloader {
         return;
       }
     }
-    
+
     console.log(`  📁 Creating directory: ${postDir}`);
     await fs.ensureDir(postDir);
 
-    // Try to get post content from API first
+    // Try browser HTML fetching first
+    console.log(`  🌐 Trying browser HTML fetch...`);
+    const html = await fetchPage(post.url, (msg) => console.log(`  ${msg}`));
+
+    if (html) {
+      const $ = cheerio.load(html);
+
+      // Save HTML content
+      await saveHtmlContent(postDir, html);
+      console.log(`  💾 Saved HTML content`);
+
+      // Check if this is SPA content
+      const bodyText = $('body').text();
+      let images = [];
+
+      if (bodyText.includes('System.import') || bodyText.includes('vite-legacy-entry')) {
+        console.log(`  ⚠️  Post page is a SPA - using browser to extract images from rendered content`);
+
+        // Use Puppeteer to extract images from the rendered page
+        images = await browserClient.extractImagesFromRenderedPost(post.url, (msg) => console.log(`    ${msg}`));
+      } else {
+        // Try enhanced HTML parser first, then fallback to original
+        images = extractMediaFromPostHTML($, post.url);
+        if (images.length === 0) {
+          console.log(`  ℹ️  Enhanced parser found no images, trying original parser...`);
+          images = extractImagesFromHTML($);
+        }
+      }
+
+      console.log(`  🖼️  Found ${images.length} images to download from HTML`);
+
+      if (images.length > 0) {
+        // Use concurrent downloader for better performance
+        const downloadStats = await this.concurrentDownloader.downloadImages(
+          images,
+          postDir,
+          (msg) => console.log(`    ${msg}`),
+          (stats) => {
+            this.stats.imagesDownloaded += stats.completed;
+            this.stats.errors += stats.failed;
+            console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed`);
+          }
+        );
+
+        this.stats.postsDownloaded++;
+        console.log(`  ✅ Post ${post.id} completed - saved to ${postDir}`);
+        return;
+      }
+    }
+
+    // Fallback to API if HTML fetch failed or found no images
+    console.log(`  ⚠️  HTML fetch failed or found no images, trying API fallback...`);
     const postData = await fetchPostFromAPI(post, (msg) => console.log(`    ${msg}`));
-    
+
     // If we have post data, do a thorough check including image verification
     if (postData) {
       const thoroughCheck = await isPostAlreadyDownloaded(postDir, postData);
@@ -175,19 +196,17 @@ class KemonoDownloader {
       } else if (thoroughCheck.missingImages && thoroughCheck.missingImages.length > 0) {
         console.log(`  🔄 Resuming: Missing ${thoroughCheck.missingImages.length} images - ${thoroughCheck.reason}`);
       }
-    }
-    
-    if (postData) {
+
       console.log(`  ✅ Got post data from API`);
-      
+
       // Save post metadata as JSON
       await savePostMetadata(postDir, postData);
       console.log(`  💾 Saved post metadata`);
-      
+
       // Extract and download images from API data using concurrent downloader
       const images = extractImagesFromPostData(postData);
-      console.log(`  🖼️  Found ${images.length} images to download`);
-      
+      console.log(`  🖼️  Found ${images.length} images to download from API`);
+
       if (images.length > 0) {
         const downloadStats = await this.concurrentDownloader.downloadImages(
           images,
@@ -203,51 +222,8 @@ class KemonoDownloader {
         // Verify all images were downloaded correctly after batch completion
         await this.verifyPostImages(postDir, images, post.id);
       }
-      
     } else {
-      console.log(`  ⚠️  API failed, trying HTML fallback...`);
-      
-      const html = await fetchPage(post.url, (msg) => console.log(`  ${msg}`));
-      if (!html) {
-        console.log(`  ❌ Skipping post due to fetch failure`);
-        return;
-      }
-
-      const $ = cheerio.load(html);
-      
-      // Save HTML content
-      await saveHtmlContent(postDir, html);
-      console.log(`  💾 Saving HTML content...`);
-
-      // Check if this is SPA content
-      const bodyText = $('body').text();
-      let images = [];
-
-      if (bodyText.includes('System.import') || bodyText.includes('vite-legacy-entry')) {
-        console.log(`  ⚠️  Post page is a SPA - using browser to extract images from rendered content`);
-
-        // Use Puppeteer to extract images from the rendered page
-        images = await browserClient.extractImagesFromRenderedPost(post.url, (msg) => console.log(`    ${msg}`));
-      } else {
-        // Try to extract images from HTML (fallback)
-        images = extractImagesFromHTML($);
-      }
-
-      console.log(`  🖼️  Found ${images.length} images to download`);
-
-      if (images.length > 0) {
-        // Use concurrent downloader for better performance
-        const downloadStats = await this.concurrentDownloader.downloadImages(
-          images,
-          postDir,
-          (msg) => console.log(`    ${msg}`),
-          (stats) => {
-            this.stats.imagesDownloaded += stats.completed;
-            this.stats.errors += stats.failed;
-            console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed`);
-          }
-        );
-      }
+      console.log(`  ❌ Both HTML and API approaches failed for this post`);
     }
 
     this.stats.postsDownloaded++;

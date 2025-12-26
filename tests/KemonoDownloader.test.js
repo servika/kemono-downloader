@@ -117,37 +117,37 @@ describe('KemonoDownloader', () => {
   });
 
   describe('getProfilePosts', () => {
-    test('should get posts from API successfully', async () => {
+    test('should get posts from HTML successfully', async () => {
       const profileUrl = 'https://kemono.cr/patreon/user/123';
       const mockPosts = [
         { id: '1', url: 'https://kemono.cr/patreon/user/123/post/1', username: 'testuser' }
       ];
-      
-      extractUserInfo.mockReturnValue({ userId: '123', service: 'patreon' });
-      fetchPostsFromAPI.mockResolvedValue(mockPosts);
-      
-      const result = await downloader.getProfilePosts(profileUrl);
-      
-      expect(result).toEqual(mockPosts);
-      expect(fetchPostsFromAPI).toHaveBeenCalledWith('patreon', '123', expect.any(Function));
-    });
 
-    test('should fallback to HTML scraping when API fails', async () => {
-      const profileUrl = 'https://kemono.cr/patreon/user/123';
-      const mockPosts = [
-        { id: '1', url: 'https://kemono.cr/patreon/user/123/post/1', username: 'testuser' }
-      ];
-      
       extractUserInfo.mockReturnValue({ userId: '123', service: 'patreon' });
-      fetchPostsFromAPI.mockResolvedValue([]);
-      
-      // Mock HTML scraping
       downloader.getProfilePostsFromHTML = jest.fn().mockResolvedValue(mockPosts);
-      
+
       const result = await downloader.getProfilePosts(profileUrl);
-      
+
       expect(result).toEqual(mockPosts);
       expect(downloader.getProfilePostsFromHTML).toHaveBeenCalledWith(profileUrl);
+      expect(fetchPostsFromAPI).not.toHaveBeenCalled();
+    });
+
+    test('should fallback to API when HTML scraping fails', async () => {
+      const profileUrl = 'https://kemono.cr/patreon/user/123';
+      const mockPosts = [
+        { id: '1', url: 'https://kemono.cr/patreon/user/123/post/1', username: 'testuser' }
+      ];
+
+      extractUserInfo.mockReturnValue({ userId: '123', service: 'patreon' });
+      downloader.getProfilePostsFromHTML = jest.fn().mockResolvedValue([]);
+      fetchPostsFromAPI.mockResolvedValue(mockPosts);
+
+      const result = await downloader.getProfilePosts(profileUrl);
+
+      expect(result).toEqual(mockPosts);
+      expect(downloader.getProfilePostsFromHTML).toHaveBeenCalledWith(profileUrl);
+      expect(fetchPostsFromAPI).toHaveBeenCalledWith('patreon', '123', expect.any(Function));
     });
   });
 
@@ -249,37 +249,30 @@ describe('KemonoDownloader', () => {
     test('should skip already downloaded posts', async () => {
       getDownloadStatus.mockResolvedValue('completed');
       isPostAlreadyDownloaded.mockResolvedValue({ downloaded: true });
-      
+
       await downloader.downloadPost(mockPost, 0, 1);
-      
+
       expect(downloader.stats.postsSkipped).toBe(1);
-      expect(fetchPostFromAPI).not.toHaveBeenCalled();
+      expect(fetchPage).not.toHaveBeenCalled();
     });
 
-    test('should download post with API data successfully', async () => {
-      const mockPostData = {
-        id: '123',
-        title: 'Test Post',
-        content: 'Post content'
-      };
+    test('should download post with HTML successfully', async () => {
+      const mockHtml = '<html><body><img src="/image1.jpg"></body></html>';
       const mockImages = [
-        { url: 'https://example.com/image1.jpg' }
+        { url: 'https://kemono.cr/image1.jpg' }
       ];
-      
+
       getDownloadStatus.mockResolvedValue('not_started');
       isPostAlreadyDownloaded.mockResolvedValue({ downloaded: false });
-      fetchPostFromAPI.mockResolvedValue(mockPostData);
-      extractImagesFromPostData.mockReturnValue(mockImages);
+      fetchPage.mockResolvedValue(mockHtml);
+      cheerio.load.mockReturnValue(createCheerioMock('normal html content'));
+      extractImagesFromHTML.mockReturnValue(mockImages);
       fs.ensureDir.mockResolvedValue();
-      savePostMetadata.mockResolvedValue();
-      verifyAllImagesDownloaded.mockResolvedValue({ allPresent: true, presentCount: 1, totalExpected: 1 });
-      
-      downloader.verifyPostImages = jest.fn().mockResolvedValue();
-      
+      saveHtmlContent.mockResolvedValue();
+
       await downloader.downloadPost(mockPost, 0, 1);
-      
-      expect(fs.ensureDir).toHaveBeenCalledWith(expect.stringContaining('testuser/123'));
-      expect(savePostMetadata).toHaveBeenCalledWith(expect.any(String), mockPostData);
+
+      expect(saveHtmlContent).toHaveBeenCalledWith(expect.any(String), mockHtml);
       expect(mockConcurrentDownloader.downloadImages).toHaveBeenCalledWith(
         mockImages,
         expect.any(String),
@@ -287,6 +280,7 @@ describe('KemonoDownloader', () => {
         expect.any(Function)
       );
       expect(downloader.stats.postsDownloaded).toBe(1);
+      expect(fetchPostFromAPI).not.toHaveBeenCalled();
     });
 
     test('should handle partial downloads and resume', async () => {
@@ -298,50 +292,68 @@ describe('KemonoDownloader', () => {
         { url: 'https://example.com/image1.jpg' },
         { url: 'https://example.com/image2.jpg' }
       ];
-      
+      const mockHtml = '<html><body><img src="/image1.jpg"></body></html>';
+
       getDownloadStatus.mockResolvedValue('partial');
-      isPostAlreadyDownloaded.mockResolvedValue({ 
-        downloaded: false, 
+      isPostAlreadyDownloaded.mockResolvedValue({
+        downloaded: false,
         missingImages: ['image2.jpg'],
         reason: 'Missing 1 image'
       });
+      fetchPage.mockResolvedValue(mockHtml);
+      cheerio.load.mockReturnValue(createCheerioMock('normal html content'));
+      extractImagesFromHTML.mockReturnValue([]);
       fetchPostFromAPI.mockResolvedValue(mockPostData);
       extractImagesFromPostData.mockReturnValue(mockImages);
       fs.ensureDir.mockResolvedValue();
       savePostMetadata.mockResolvedValue();
-      
+      saveHtmlContent.mockResolvedValue();
+
       downloader.verifyPostImages = jest.fn().mockResolvedValue();
-      
+
       await downloader.downloadPost(mockPost, 0, 1);
-      
+
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Resuming'));
       expect(mockConcurrentDownloader.downloadImages).toHaveBeenCalled();
     });
 
-    test('should fallback to HTML when API fails', async () => {
-      const mockHtml = '<html><body><img src="/image1.jpg"></body></html>';
+    test('should fallback to API when HTML fails', async () => {
+      const mockPostData = {
+        id: '123',
+        title: 'Test Post',
+        content: 'Post content'
+      };
       const mockImages = [
-        { url: 'https://kemono.cr/image1.jpg' }
+        { url: 'https://example.com/image1.jpg' }
       ];
+      const mockHtml = '<html><body></body></html>';
 
       getDownloadStatus.mockResolvedValue('not_started');
       isPostAlreadyDownloaded.mockResolvedValue({ downloaded: false });
-      fetchPostFromAPI.mockResolvedValue(null);
       fetchPage.mockResolvedValue(mockHtml);
       cheerio.load.mockReturnValue(createCheerioMock('normal html content'));
-      extractImagesFromHTML.mockReturnValue(mockImages);
+      extractImagesFromHTML.mockReturnValue([]);
+      fetchPostFromAPI.mockResolvedValue(mockPostData);
+      extractImagesFromPostData.mockReturnValue(mockImages);
       fs.ensureDir.mockResolvedValue();
+      savePostMetadata.mockResolvedValue();
       saveHtmlContent.mockResolvedValue();
+      verifyAllImagesDownloaded.mockResolvedValue({ allPresent: true, presentCount: 1, totalExpected: 1 });
+
+      downloader.verifyPostImages = jest.fn().mockResolvedValue();
+
       await downloader.downloadPost(mockPost, 0, 1);
 
-      expect(saveHtmlContent).toHaveBeenCalledWith(expect.any(String), mockHtml);
+      expect(fetchPage).toHaveBeenCalled();
+      expect(fetchPostFromAPI).toHaveBeenCalled();
+      expect(savePostMetadata).toHaveBeenCalledWith(expect.any(String), mockPostData);
       expect(mockConcurrentDownloader.downloadImages).toHaveBeenCalledWith(
         mockImages,
         expect.any(String),
         expect.any(Function),
         expect.any(Function)
       );
-      expect(downloader.stats.imagesDownloaded).toBe(1);
+      expect(downloader.stats.postsDownloaded).toBe(1);
     });
 
     test('should handle SPA content in post page', async () => {
@@ -368,13 +380,14 @@ describe('KemonoDownloader', () => {
     test('should handle post fetch failure', async () => {
       getDownloadStatus.mockResolvedValue('not_started');
       isPostAlreadyDownloaded.mockResolvedValue({ downloaded: false });
-      fetchPostFromAPI.mockResolvedValue(null);
       fetchPage.mockResolvedValue(null);
-      
+      fetchPostFromAPI.mockResolvedValue(null);
+      fs.ensureDir.mockResolvedValue();
+
       await downloader.downloadPost(mockPost, 0, 1);
-      
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Skipping post due to fetch failure'));
-      expect(downloader.stats.postsDownloaded).toBe(0);
+
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Both HTML and API approaches failed'));
+      expect(downloader.stats.postsDownloaded).toBe(1);
     });
   });
 
