@@ -1,0 +1,31 @@
+{
+  "download": {
+    "maxConcurrentImages": 3,
+    "maxConcurrentPosts": 1,
+    "delayBetweenImages": 400,
+    "delayBetweenPosts": 1000,
+    "delayBetweenAPIRequests": 200,
+    "delayBetweenPages": 1000,
+    "retryAttempts": 3,
+    "retryDelay": 2000
+  },
+  "api": {
+    "baseUrl": "https://kemono.cr",
+    "timeout": 45000,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "cookies": {
+      "session": ""
+    }
+  },
+  "storage": {
+    "baseDirectory": "download",
+    "createSubfolders": true,
+    "sanitizeFilenames": true,
+    "preserveOriginalNames": true
+  },
+  "logging": {
+    "verboseProgress": true,
+    "showSkippedFiles": true,
+    "showDetailedErrors": true
+  }
+}

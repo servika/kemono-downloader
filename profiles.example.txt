@@ -1,0 +1,5 @@
+# List kemono.cr profile URLs here, one per line
+# Examples:
+# https://kemono.cr/patreon/user/12345
+# https://kemono.cr/fanbox/user/67890
+# https://kemono.cr/boosty/user/username

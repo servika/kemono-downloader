@@ -1,0 +1,38 @@
+# webstorm files
+.idea
+
+# nodejs modules
+node_modules
+
+# folders
+download
+coverage
+
+# file with covered urls (manual management)
+covered.txt
+
+# mac os files
+.DS_Store
+
+# logs
+*.log
+logs/
+
+# runtime files
+*.pid
+
+# env files
+.env
+.env.local
+.env.production
+
+# temporary files
+*.tmp
+temp/
+
+# user configuration (keep example)
+config.json
+profiles.txt
+
+# development context
+CLAUDE.md
