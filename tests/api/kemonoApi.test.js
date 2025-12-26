@@ -85,6 +85,131 @@ describe('kemonoApi', () => {
       expect(delay).toHaveBeenCalledWith(0);
     });
 
+    test('should handle response with nested posts array', async () => {
+      const mockResponse = {
+        posts: [
+          { id: '111', title: 'Nested Post' }
+        ]
+      };
+
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockResolvedValueOnce({ data: mockResponse })
+        .mockResolvedValueOnce({ data: [] });
+
+      const result = await fetchPostsFromAPI('patreon', '99999');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('111');
+      expect(result[0].title).toBe('Nested Post');
+    });
+
+    test('should handle response with nested data array', async () => {
+      const mockResponse = {
+        data: [
+          { id: '222', title: 'Data Nested Post' }
+        ]
+      };
+
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockResolvedValueOnce({ data: mockResponse })
+        .mockResolvedValueOnce({ data: [] });
+
+      const result = await fetchPostsFromAPI('fanbox', '88888');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('222');
+    });
+
+    test('should skip unexpected response formats and continue', async () => {
+      const mockOnLog = jest.fn();
+      const mockGoodResponse = [{ id: '333', title: 'Good Post' }];
+
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockResolvedValueOnce({ data: { unexpected: 'format' } }) // Bad format
+        .mockResolvedValueOnce({ data: mockGoodResponse }) // Good format
+        .mockResolvedValueOnce({ data: [] });
+
+      const result = await fetchPostsFromAPI('patreon', '77777', mockOnLog);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('333');
+      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Unexpected response format'));
+    });
+
+    test('should handle pagination with multiple pages', async () => {
+      const mockOnLog = jest.fn();
+      const page1 = [
+        { id: '1', title: 'Post 1' },
+        { id: '2', title: 'Post 2' }
+      ];
+      const page2 = [
+        { id: '3', title: 'Post 3' },
+        { id: '4', title: 'Post 4' }
+      ];
+
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockResolvedValueOnce({ data: page1 })
+        .mockResolvedValueOnce({ data: page2 })
+        .mockResolvedValueOnce({ data: [] });
+
+      const result = await fetchPostsFromAPI('patreon', '55555', mockOnLog);
+
+      expect(result).toHaveLength(4);
+      expect(result.map(p => p.id)).toEqual(['1', '2', '3', '4']);
+      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Fetching page 2'));
+    });
+
+    test('should deduplicate posts across pages', async () => {
+      const page1 = [
+        { id: '1', title: 'Post 1' },
+        { id: '2', title: 'Post 2' }
+      ];
+      const page2 = [
+        { id: '2', title: 'Post 2' }, // Duplicate
+        { id: '3', title: 'Post 3' }
+      ];
+
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockResolvedValueOnce({ data: page1 })
+        .mockResolvedValueOnce({ data: page2 })
+        .mockResolvedValueOnce({ data: [] });
+
+      const result = await fetchPostsFromAPI('patreon', '44444');
+
+      expect(result).toHaveLength(3);
+      expect(result.map(p => p.id)).toEqual(['1', '2', '3']);
+    });
+
+    test('should handle errors during pagination gracefully', async () => {
+      const mockOnLog = jest.fn();
+      const page1 = [{ id: '1', title: 'Post 1' }];
+
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockRejectedValueOnce(new Error('Profile not found'))
+        .mockResolvedValueOnce({ data: page1 })
+        .mockRejectedValueOnce(new Error('Server error'))
+        .mockRejectedValueOnce(new Error('Server error'))
+        .mockRejectedValueOnce(new Error('Server error'))
+        .mockRejectedValueOnce(new Error('Server error'))
+        .mockRejectedValueOnce(new Error('Server error'));
+
+      const result = await fetchPostsFromAPI('patreon', '33333', mockOnLog);
+
+      expect(result).toHaveLength(1);
+      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('No working pagination format found'));
+    });
+
     test('should fallback to userId when profile lookup fails', async () => {
       const mockResponse = {
         data: [

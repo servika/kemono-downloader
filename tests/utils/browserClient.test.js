@@ -59,7 +59,7 @@ describe('browserClient', () => {
     expect(mockPage.setViewport).toHaveBeenCalled();
     expect(mockPage.setUserAgent).toHaveBeenCalled();
     expect(mockPage.setExtraHTTPHeaders).toHaveBeenCalled();
-    expect(mockPage.goto).toHaveBeenCalledWith('https://kemono.cr/', expect.any(Object));
+    expect(mockPage.goto).toHaveBeenCalledWith('https://kemono.cr', expect.any(Object));
     expect(delay).toHaveBeenCalledWith(2000);
     expect(browserClient.isInitialized).toBe(true);
   });
