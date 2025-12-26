@@ -57,17 +57,17 @@ class BrowserClient {
 
     // Set authentication cookies from config
     const cookies = config.getCookies();
-    if (cookies.session) {
-      console.log('🍪 Setting authentication cookies...');
-      await this.page.setCookie({
-        name: 'session',
-        value: cookies.session,
-        domain: domain,
-        path: '/',
-        httpOnly: true,
-        secure: true,
-        sameSite: 'Lax'
-      });
+    const cookieEntries = Object.entries(cookies || {}).filter(([, value]) => value);
+    if (cookieEntries.length > 0) {
+      console.log(`🍪 Setting ${cookieEntries.length} authentication cookie(s)...`);
+      for (const [name, value] of cookieEntries) {
+        await this.page.setCookie({
+          name,
+          value: String(value),
+          domain: domain,
+          path: '/'
+        });
+      }
     }
 
     // Visit the main page first to establish session
