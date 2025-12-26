@@ -11,14 +11,18 @@ const DEFAULT_CONFIG = {
     maxConcurrentPosts: 1,
     delayBetweenImages: 200,
     delayBetweenPosts: 500,
-    delayBetweenAPIRequests: 500,
+    delayBetweenAPIRequests: 200,
     delayBetweenPages: 1000,
     retryAttempts: 3,
     retryDelay: 1000
   },
   api: {
+    baseUrl: "https://kemono.cr",
     timeout: 30000,
-    userAgent: "Mozilla/5.0 (compatible; kemono-downloader)"
+    userAgent: "Mozilla/5.0 (compatible; kemono-downloader)",
+    cookies: {
+      session: ""
+    }
   },
   storage: {
     baseDirectory: "download",
@@ -123,7 +127,7 @@ class Config {
   }
 
   getAPIDelay() {
-    return this.get('download.delayBetweenAPIRequests') || 500;
+    return this.get('download.delayBetweenAPIRequests') || 200;
   }
 
   getPageDelay() {
@@ -136,6 +140,22 @@ class Config {
 
   getRetryDelay() {
     return this.get('download.retryDelay') || 1000;
+  }
+
+  getTimeout() {
+    return this.get('api.timeout') || 30000;
+  }
+
+  getUserAgent() {
+    return this.get('api.userAgent') || 'Mozilla/5.0 (compatible; kemono-downloader)';
+  }
+
+  getBaseUrl() {
+    return this.get('api.baseUrl') || 'https://kemono.cr';
+  }
+
+  getCookies() {
+    return this.get('api.cookies') || { session: '' };
   }
 
   getBaseDirectory() {

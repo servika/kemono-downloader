@@ -2,6 +2,31 @@
  * URL and path utilities
  */
 
+function validateUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const allowedProtocols = ['http:', 'https:'];
+    
+    if (!allowedProtocols.includes(parsedUrl.protocol)) {
+      throw new Error(`Unsupported protocol: ${parsedUrl.protocol}`);
+    }
+    
+    // Prevent localhost/private network access for security
+    const hostname = parsedUrl.hostname.toLowerCase();
+    if (hostname === 'localhost' || 
+        hostname.startsWith('127.') || 
+        hostname.startsWith('192.168.') || 
+        hostname.startsWith('10.') ||
+        hostname.startsWith('172.')) {
+      throw new Error('Private network access not allowed');
+    }
+    
+    return parsedUrl;
+  } catch (error) {
+    throw new Error(`Invalid URL: ${error.message}`);
+  }
+}
+
 function extractUserInfo(profileUrl) {
   const urlParts = profileUrl.split('/');
   const userIdIndex = urlParts.indexOf('user') + 1;
@@ -11,6 +36,64 @@ function extractUserInfo(profileUrl) {
     userId: urlParts[userIdIndex],
     service: urlParts[serviceIndex]
   };
+}
+
+function extractProfileName($, userInfo) {
+  // Try to extract username from various HTML selectors
+  const selectors = [
+    '.user-header__info span[itemprop="name"]',
+    '.user-header__profile h1',
+    '.user-header h1',
+    '.user-info h1',
+    'h1.user-name',
+    'h1',
+    '[data-username]',
+    '.username'
+  ];
+  
+  let username = null;
+  
+  for (const selector of selectors) {
+    const element = $(selector);
+    if (element.length > 0) {
+      const text = element.text().trim();
+      if (text && text.length > 0 && !text.toLowerCase().includes('kemono')) {
+        username = text;
+        break;
+      }
+    }
+  }
+  
+  // If no username found, try data attributes
+  if (!username) {
+    const dataUsername = $('[data-username]').attr('data-username');
+    if (dataUsername) {
+      username = dataUsername;
+    }
+  }
+  
+  // If still no username found, try extracting from meta tags
+  if (!username) {
+    const metaTitle = $('meta[property="og:title"]').attr('content');
+    if (metaTitle && !metaTitle.toLowerCase().includes('kemono')) {
+      username = metaTitle;
+    }
+  }
+  
+  // If still no username, fallback to URL-based extraction or generic name
+  if (!username) {
+    // Try to extract from URL if it contains username patterns
+    const urlPattern = /\/([^\/]+)$/;
+    const match = userInfo?.profileUrl?.match(urlPattern);
+    if (match && match[1] && match[1] !== userInfo.userId) {
+      username = match[1];
+    } else {
+      username = `user_${userInfo.userId}`;
+    }
+  }
+  
+  // Clean and sanitize the username for filesystem use
+  return sanitizeFilename(username);
 }
 
 function extractPostId(postUrl) {
@@ -32,8 +115,19 @@ function isVideoUrl(url) {
   return videoExtensions.some(ext => urlLower.includes(ext));
 }
 
+function isArchiveUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const archiveExtensions = ['.zip', '.rar', '.7z', '.tar', '.tar.gz', '.tar.bz2', '.tar.xz'];
+  const urlLower = url.toLowerCase();
+  return archiveExtensions.some(ext => urlLower.includes(ext));
+}
+
 function isMediaUrl(url) {
   return isImageUrl(url) || isVideoUrl(url);
+}
+
+function isDownloadableUrl(url) {
+  return isImageUrl(url) || isVideoUrl(url) || isArchiveUrl(url);
 }
 
 function getImageName(imageInfo, index) {
@@ -64,18 +158,37 @@ function getImageName(imageInfo, index) {
 function sanitizeFilename(filename) {
   // Remove or replace characters that are invalid in filenames
   return filename
-    .replace(/[<>:"/\\|?*]/g, '_')  // Replace invalid characters with underscore
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')  // Replace invalid characters including control characters
+    .replace(/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i, '_$1')  // Handle Windows reserved names
     .replace(/\s+/g, '_')           // Replace spaces with underscore
     .replace(/_{2,}/g, '_')         // Replace multiple underscores with single
-    .replace(/^_|_$/g, '')          // Remove leading/trailing underscores
-    .substring(0, 255);             // Limit filename length
+    .replace(/^_|_$|^\.|\.$/g, '')  // Remove leading/trailing underscores and dots
+    .substring(0, 200);             // Conservative filename length limit
+}
+
+function validateFilePath(filepath) {
+  const path = require('path');
+  const resolved = path.resolve(filepath);
+  const cwd = process.cwd();
+  
+  if (!resolved.startsWith(cwd)) {
+    throw new Error('Invalid path: directory traversal detected');
+  }
+  
+  return resolved;
 }
 
 module.exports = {
+  validateUrl,
+  validateFilePath,
   extractUserInfo,
   extractPostId,
+  extractProfileName,
   isImageUrl,
   isVideoUrl,
+  isArchiveUrl,
   isMediaUrl,
-  getImageName
+  isDownloadableUrl,
+  getImageName,
+  sanitizeFilename
 };

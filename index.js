@@ -5,20 +5,20 @@ const KemonoDownloader = require('./src/KemonoDownloader');
 async function main() {
   console.log('🚀 Starting Kemono Downloader...\n');
   const downloader = new KemonoDownloader();
-  
+
   // Initialize configuration
   await downloader.initialize();
-  
+
   // Get input file from command line arguments or use default
   const inputFile = process.argv[2] || 'profiles.txt';
-  
+
   if (!inputFile) {
     console.log('Usage: node index.js [profiles.txt]');
     console.log('');
     console.log('Defaults to profiles.txt if no file specified.');
     console.log('Create a text file with one profile URL per line:');
-    console.log('https://kemono.su/patreon/user/42015243');
-    console.log('https://kemono.su/patreon/user/12345678');
+    console.log('https://kemono.cr/patreon/user/42015243');
+    console.log('https://kemono.cr/patreon/user/12345678');
     process.exit(1);
   }
 

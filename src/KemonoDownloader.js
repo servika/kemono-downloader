@@ -3,7 +3,7 @@ const path = require('path');
 const cheerio = require('cheerio');
 
 const { delay } = require('./utils/delay');
-const { extractUserInfo } = require('./utils/urlUtils');
+const { extractUserInfo, extractProfileName } = require('./utils/urlUtils');
 const { getImageName } = require('./utils/urlUtils');
 const { downloadImage, savePostMetadata, saveHtmlContent, readProfilesFile } = require('./utils/fileUtils');
 const { fetchPage, fetchPostsFromAPI, fetchPostFromAPI } = require('./api/kemonoApi');
@@ -11,6 +11,7 @@ const { extractImagesFromPostData, extractImagesFromHTML } = require('./extracto
 const { isPostAlreadyDownloaded, getDownloadStatus, verifyAllImagesDownloaded } = require('./utils/downloadChecker');
 const ConcurrentDownloader = require('./utils/concurrentDownloader');
 const config = require('./utils/config');
+const browserClient = require('./utils/browserClient');
 
 class KemonoDownloader {
   constructor() {
@@ -61,11 +62,9 @@ class KemonoDownloader {
     const posts = [];
     const userInfo = extractUserInfo(profileUrl);
 
-    // Extract username from page
-    const username = $('.user-header__info span[itemprop="name"]').text().trim() || 
-                    $('.user-header__profile h1').text().trim() || 
-                    $('h1').first().text().trim() || 
-                    `user_${userInfo.userId}`;
+    // Extract username from page using improved extraction
+    userInfo.profileUrl = profileUrl;
+    const username = extractProfileName($, userInfo);
 
     console.log(`  👤 Found user: ${username}`);
 
@@ -114,13 +113,13 @@ class KemonoDownloader {
           }
           
           if (postLink && postLink.includes('/post/')) {
-            const fullPostUrl = postLink.startsWith('http') ? postLink : `https://kemono.su${postLink}`;
+            const fullPostUrl = postLink.startsWith('http') ? postLink : `https://kemono.cr${postLink}`;
             const postId = this.extractPostId(fullPostUrl);
             
             posts.push({
               url: fullPostUrl,
               id: postId,
-              username: username.replace(/[<>:"/\\|?*]/g, '_') // Sanitize filename
+              username: username
             });
             postsFound = true;
           }
@@ -222,29 +221,32 @@ class KemonoDownloader {
 
       // Check if this is SPA content
       const bodyText = $('body').text();
+      let images = [];
+
       if (bodyText.includes('System.import') || bodyText.includes('vite-legacy-entry')) {
-        console.log(`  ⚠️  Post page is also a SPA - no images can be extracted from HTML`);
-        console.log(`  💡 Content is loaded dynamically. API method needed for images.`);
+        console.log(`  ⚠️  Post page is a SPA - using browser to extract images from rendered content`);
+
+        // Use Puppeteer to extract images from the rendered page
+        images = await browserClient.extractImagesFromRenderedPost(post.url, (msg) => console.log(`    ${msg}`));
       } else {
         // Try to extract images from HTML (fallback)
-        const images = extractImagesFromHTML($);
-        console.log(`  🖼️  Found ${images.length} images to download`);
-        
-        for (let i = 0; i < images.length; i++) {
-          const imageUrl = images[i];
-          const imageName = getImageName(imageUrl, i);
-          const imagePath = path.join(postDir, imageName);
-          
-          try {
-            await downloadImage(imageUrl, imagePath, (msg) => console.log(`    ${msg}`));
-            this.stats.imagesDownloaded++;
-            // Small delay between image downloads
-            await delay(200);
-          } catch (error) {
-            this.stats.errors++;
-            console.log(`    ⚠️  Continuing with next image...`);
+        images = extractImagesFromHTML($);
+      }
+
+      console.log(`  🖼️  Found ${images.length} images to download`);
+
+      if (images.length > 0) {
+        // Use concurrent downloader for better performance
+        const downloadStats = await this.concurrentDownloader.downloadImages(
+          images,
+          postDir,
+          (msg) => console.log(`    ${msg}`),
+          (stats) => {
+            this.stats.imagesDownloaded += stats.completed;
+            this.stats.errors += stats.failed;
+            console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed`);
           }
-        }
+        );
       }
     }
 
@@ -268,6 +270,8 @@ class KemonoDownloader {
           
           if (posts.length === 0) {
             console.log(`  ⚠️  No posts found for this profile`);
+            this.stats.profilesProcessed++;
+            console.log(`  ✅ Profile completed`);
             continue;
           }
 

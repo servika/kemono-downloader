@@ -5,7 +5,7 @@ const config = require('./config');
 const { delay } = require('./delay');
 
 /**
- * File and download utilities for images and videos
+ * File and download utilities for images, videos, and archives
  */
 
 async function downloadMedia(mediaUrl, filepath, onProgress) {
@@ -21,7 +21,7 @@ async function downloadMediaWithRetry(mediaUrl, filepath, onProgress) {
 async function downloadImageWithRetry(imageUrl, filepath, onProgress) {
   const retryAttempts = config.getRetryAttempts();
   const retryDelay = config.getRetryDelay();
-  
+
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
     try {
       await downloadImage(imageUrl, filepath, onProgress);
@@ -32,12 +32,14 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress) {
         throw error;
       } else {
         // Check if we should retry based on error type
-        const shouldRetry = error.response?.status >= 500 || 
-                           error.response?.status === 429 || 
+        const shouldRetry = error.response?.status >= 500 ||
+                           error.response?.status === 429 ||
                            error.response?.status === 403 ||
                            error.code === 'ECONNABORTED' ||
-                           error.message.includes('timeout');
-        
+                           error.message.includes('timeout') ||
+                           error.message.includes('connection lost') ||
+                           error.message.includes('Download interrupted');
+
         if (shouldRetry) {
           if (onProgress) onProgress(`🔄 Retrying ${path.basename(filepath)} (attempt ${attempt + 1}/${retryAttempts})`);
           await delay(retryDelay);
@@ -53,9 +55,17 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress) {
 async function downloadImage(imageUrl, filepath, onProgress) {
   try {
     if (onProgress) onProgress(`📥 Downloading: ${path.basename(filepath)}`);
-    
-    const timeout = config.get('api.timeout') || 30000; // 30 seconds default
-    
+
+    // Determine file type to adjust timeout for potentially large files
+    const isVideo = /\.(mp4|avi|mov|wmv|flv|webm|mkv|m4v|3gp|ogv)$/i.test(filepath);
+    const isArchive = /\.(zip|rar|7z|tar|tar\.gz|tar\.bz2|tar\.xz)$/i.test(filepath);
+    const baseTimeout = config.get('api.timeout') || 30000; // 30 seconds default
+    let timeout = baseTimeout;
+
+    if (isVideo || isArchive) {
+      timeout = baseTimeout * 5; // 5x timeout for videos and archives
+    }
+
     const response = await axios({
       method: 'GET',
       url: imageUrl,
@@ -65,37 +75,43 @@ async function downloadImage(imageUrl, filepath, onProgress) {
         'User-Agent': config.get('api.userAgent') || 'Mozilla/5.0 (compatible; kemono-downloader)'
       }
     });
-    
+
     await fs.ensureDir(path.dirname(filepath));
     const writer = fs.createWriteStream(filepath);
-    
+
     // Get file size from headers for progress tracking
     const totalSize = parseInt(response.headers['content-length']) || 0;
     let downloadedSize = 0;
     let lastProgressTime = 0;
     const progressInterval = 1000; // Update progress every 1 second
-    
+
     return new Promise((resolve, reject) => {
       let isResolved = false;
       let streamTimeout;
-      
-      const cleanup = () => {
+      let lastDataTime = Date.now();
+
+      const cleanup = (immediate = false) => {
         if (streamTimeout) {
           clearTimeout(streamTimeout);
           streamTimeout = null;
         }
-        
-        // Properly unpipe and destroy streams
-        if (response.data && !response.data.destroyed) {
-          response.data.unpipe(writer);
-          response.data.destroy();
-        }
-        
-        if (writer && !writer.destroyed) {
-          writer.destroy();
-        }
+
+        // For videos, wait a bit before destroying streams to ensure write completion
+        const cleanupDelay = immediate || !isVideo ? 0 : 100;
+
+        setTimeout(() => {
+          // Properly unpipe and destroy streams
+          if (response.data && !response.data.destroyed) {
+            response.data.unpipe(writer);
+            response.data.destroy();
+          }
+
+          if (writer && !writer.destroyed) {
+            writer.destroy();
+          }
+        }, cleanupDelay);
       };
-      
+
       const resolveOnce = (result) => {
         if (!isResolved) {
           isResolved = true;
@@ -106,15 +122,15 @@ async function downloadImage(imageUrl, filepath, onProgress) {
           resolve(result);
         }
       };
-      
+
       const rejectOnce = (error) => {
         if (!isResolved) {
           isResolved = true;
-          cleanup();
+          cleanup(true); // Immediate cleanup on error
           reject(error);
         }
       };
-      
+
       const formatBytes = (bytes) => {
         if (bytes === 0) return '0 B';
         const k = 1024;
@@ -122,56 +138,85 @@ async function downloadImage(imageUrl, filepath, onProgress) {
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
       };
-      
+
       const showProgress = () => {
         if (onProgress && totalSize > 0) {
           const percentage = Math.round((downloadedSize / totalSize) * 100);
           const downloadedFormatted = formatBytes(downloadedSize);
           const totalFormatted = formatBytes(totalSize);
           const filename = path.basename(filepath);
-          
-          // Show progress for files larger than 1MB or videos
-          const isLargeFile = totalSize > 1024 * 1024; // 1MB
+
+          // Show progress for all files with known size
           const isVideoFile = /\.(mp4|avi|mov|wmv|flv|webm|mkv)$/i.test(filename);
-          
-          if (isLargeFile || isVideoFile) {
-            onProgress(`📥 ${filename}: ${percentage}% (${downloadedFormatted}/${totalFormatted})`);
-          }
+          const isArchiveFile = /\.(zip|rar|7z|tar)$/i.test(filename);
+
+          onProgress(`📥 ${filename}: ${percentage}% (${downloadedFormatted}/${totalFormatted})`);
         }
       };
-      
-      // Set up timeout for the stream writing process
-      streamTimeout = setTimeout(() => {
-        rejectOnce(new Error(`Download timeout after ${timeout}ms`));
-      }, timeout);
-      
+
+      // Set up adaptive timeout that resets on data activity
+      const resetTimeout = () => {
+        if (streamTimeout) {
+          clearTimeout(streamTimeout);
+        }
+        streamTimeout = setTimeout(() => {
+          const timeSinceLastData = Date.now() - lastDataTime;
+          if (timeSinceLastData > timeout / 2) {
+            rejectOnce(new Error(`Download stalled - no data for ${timeSinceLastData}ms`));
+          } else {
+            resetTimeout(); // Keep waiting if we're still receiving data
+          }
+        }, timeout);
+      };
+
+      resetTimeout();
+
       // Track download progress
       response.data.on('data', (chunk) => {
         downloadedSize += chunk.length;
-        
+        lastDataTime = Date.now(); // Update last data time for timeout management
+
         const now = Date.now();
         if (now - lastProgressTime >= progressInterval) {
           showProgress();
           lastProgressTime = now;
         }
       });
-      
+
       // Handle writer events first, before piping
       writer.on('finish', () => {
         if (onProgress) onProgress(`✅ Downloaded: ${path.basename(filepath)} (${formatBytes(downloadedSize)})`);
-        resolveOnce();
+        // For videos, add a small delay to ensure file is fully written
+        if (isVideo) {
+          setTimeout(() => resolveOnce(), 50);
+        } else {
+          resolveOnce();
+        }
       });
-      
+
       writer.on('error', (error) => {
         if (onProgress) onProgress(`❌ Failed to save: ${path.basename(filepath)} - ${error.message}`);
         rejectOnce(error);
       });
-      
+
+      // Handle writer close event to ensure proper cleanup
+      writer.on('close', () => {
+        if (!isResolved) {
+          // If we reach close without finish, this could be a network interruption
+          // Check if we have some data downloaded to determine if this should be retried
+          const hasPartialData = downloadedSize > 0;
+          const errorMsg = hasPartialData
+            ? `Download interrupted after ${formatBytes(downloadedSize)} - connection lost`
+            : 'Writer closed unexpectedly - no data received';
+          rejectOnce(new Error(errorMsg));
+        }
+      });
+
       // Handle response stream errors
       response.data.on('error', (error) => {
         rejectOnce(new Error(`Stream error: ${error.message}`));
       });
-      
+
       // Only pipe after all event handlers are set up
       response.data.pipe(writer);
     });
