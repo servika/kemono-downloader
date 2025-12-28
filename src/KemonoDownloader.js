@@ -276,6 +276,15 @@ class KemonoDownloader {
     }
 
     // Fallback to API if HTML fetch failed or found no images
+    const skipAPI = config.get('api.skipAPIFallback', false);
+    if (skipAPI) {
+      console.log(`  ⚠️  HTML fetch failed or found no images, API fallback disabled`);
+      console.log(`  ❌ Both HTML and API approaches failed for this post`);
+      this.stats.postsDownloaded++;
+      console.log(`  ✅ Post ${post.id} completed - saved to ${postDir}`);
+      return;
+    }
+
     console.log(`  ⚠️  HTML fetch failed or found no images, trying API fallback...`);
     const postData = await fetchPostFromAPI(post, (msg) => console.log(`    ${msg}`));
 
