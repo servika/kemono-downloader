@@ -284,13 +284,26 @@ class BrowserClient {
           }
         });
 
+        // Debug: Log what we found
+        const debug = {
+          linksFound: links.length,
+          imagesFound: images.length,
+          videosFound: videos.length,
+          urlsCollected: urls.length
+        };
+
         // Remove duplicates
-        return [...new Set(urls)];
+        return { urls: [...new Set(urls)], debug };
       });
 
-      if (onLog) onLog(`✅ Extracted ${mediaUrls.length} media URLs from rendered page`);
+      if (onLog) {
+        onLog(`✅ Extracted ${mediaUrls.urls.length} media URLs from rendered page`);
+        if (mediaUrls.urls.length === 0) {
+          onLog(`   🔍 Debug: Found ${mediaUrls.debug.linksFound} links, ${mediaUrls.debug.imagesFound} images, ${mediaUrls.debug.videosFound} videos`);
+        }
+      }
 
-      return mediaUrls;
+      return mediaUrls.urls;
 
     } catch (error) {
       if (onLog) onLog(`❌ Failed to extract images: ${error.message}`);
