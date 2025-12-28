@@ -112,6 +112,33 @@ class KemonoDownloader {
       // Use enhanced HTML parser to extract posts from this page
       const pagePosts = extractPostsFromProfileHTML($, pageUrl);
 
+      // Debug: Check for error messages or blocks if no posts found
+      if (pagePosts.length === 0 && pageNum > 1) {
+        const bodyText = $('body').text().toLowerCase();
+        const pageTitle = $('title').text();
+
+        console.log(`  🔍 Debug: Page ${pageNum} returned 0 posts - investigating...`);
+        console.log(`      Page title: ${pageTitle}`);
+
+        if (bodyText.includes('captcha') || bodyText.includes('verify you are human')) {
+          console.log(`      ⚠️  Captcha detected on page ${pageNum}`);
+        }
+        if (bodyText.includes('rate limit') || bodyText.includes('too many requests')) {
+          console.log(`      ⚠️  Rate limiting detected on page ${pageNum}`);
+        }
+        if (bodyText.includes('403') || bodyText.includes('forbidden')) {
+          console.log(`      ⚠️  403 Forbidden on page ${pageNum}`);
+        }
+        if (bodyText.includes('404') || bodyText.includes('not found')) {
+          console.log(`      ⚠️  404 Not Found on page ${pageNum}`);
+        }
+
+        // Check how many article elements exist at all
+        const articleCount = $('article').length;
+        const linkCount = $('a[href*="/post/"]').length;
+        console.log(`      HTML stats: ${articleCount} <article> elements, ${linkCount} post links`);
+      }
+
       // Extract username from first page
       if (pageNum === 1) {
         username = extractUsernameFromProfile($, profileUrl);
