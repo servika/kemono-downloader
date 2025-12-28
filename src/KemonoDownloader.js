@@ -70,40 +70,102 @@ class KemonoDownloader {
   }
 
   async getProfilePostsFromHTML(profileUrl) {
-    const html = await fetchPage(profileUrl, (msg) => console.log(`  ${msg}`));
-    if (!html) {
-      console.log(`  ❌ Could not load profile page`);
-      return [];
-    }
-
-    const $ = cheerio.load(html);
+    const allPosts = [];
     const userInfo = extractUserInfo(profileUrl);
+    let offset = 0;
+    let pageNum = 1;
+    let consecutiveEmptyPages = 0;
+    let username = null;
 
-    // Check if this is a SPA (Single Page Application)
-    const bodyText = $('body').text().substring(0, 500);
-    if (bodyText.includes('System.import') || bodyText.includes('vite-legacy-entry')) {
-      console.log(`  ⚠️  Detected SPA - content loaded dynamically via JavaScript`);
-      console.log(`  💡 This site requires JavaScript to load posts. Consider:`);
-      console.log(`     1. Check if the user has posts (visit the URL manually)`);
-      console.log(`     2. The site may have moved or changed structure`);
-      console.log(`     3. API endpoints may have changed`);
-      return [];
+    // Pagination loop - kemono.cr uses ?o=offset for pagination (50 posts per page)
+    while (true) {
+      // Build URL with offset for pagination
+      const pageUrl = offset === 0
+        ? profileUrl
+        : `${profileUrl}?o=${offset}`;
+
+      if (pageNum > 1) {
+        console.log(`  📄 Fetching page ${pageNum} (offset ${offset})...`);
+      }
+
+      const html = await fetchPage(pageUrl, (msg) => console.log(`  ${msg}`));
+      if (!html) {
+        console.log(`  ❌ Could not load profile page ${pageNum}`);
+        break;
+      }
+
+      const $ = cheerio.load(html);
+
+      // Check if this is a SPA (Single Page Application) - only on first page
+      if (pageNum === 1) {
+        const bodyText = $('body').text().substring(0, 500);
+        if (bodyText.includes('System.import') || bodyText.includes('vite-legacy-entry')) {
+          console.log(`  ⚠️  Detected SPA - content loaded dynamically via JavaScript`);
+          console.log(`  💡 This site requires JavaScript to load posts. Consider:`);
+          console.log(`     1. Check if the user has posts (visit the URL manually)`);
+          console.log(`     2. The site may have moved or changed structure`);
+          console.log(`     3. API endpoints may have changed`);
+          return [];
+        }
+      }
+
+      // Use enhanced HTML parser to extract posts from this page
+      const pagePosts = extractPostsFromProfileHTML($, pageUrl);
+
+      // Extract username from first page
+      if (pageNum === 1) {
+        username = extractUsernameFromProfile($, profileUrl);
+        console.log(`  👤 Found user: ${username}`);
+      }
+
+      // Track existing post IDs to avoid duplicates
+      const existingIds = new Set(allPosts.map(p => p.id));
+      let newPostsCount = 0;
+
+      // Add new posts (avoiding duplicates)
+      pagePosts.forEach(post => {
+        if (!existingIds.has(post.id)) {
+          post.username = username;
+          allPosts.push(post);
+          newPostsCount++;
+        }
+      });
+
+      if (newPostsCount === 0) {
+        consecutiveEmptyPages++;
+        if (consecutiveEmptyPages >= 2) {
+          console.log(`  📄 No new posts found on page ${pageNum} - stopping pagination`);
+          break;
+        }
+      } else {
+        consecutiveEmptyPages = 0;
+        if (pageNum > 1) {
+          console.log(`  ✅ Page ${pageNum}: Found ${newPostsCount} new posts (total: ${allPosts.length})`);
+        }
+      }
+
+      // Safety limit: stop after 20 pages (1000 posts)
+      if (pageNum >= 20) {
+        console.log(`  ⚠️  Reached pagination safety limit of 20 pages`);
+        break;
+      }
+
+      // If we got less than 50 posts on this page, likely the last page
+      if (pagePosts.length < 50) {
+        console.log(`  📄 Page ${pageNum} returned ${pagePosts.length} posts (less than 50) - likely last page`);
+        break;
+      }
+
+      // Move to next page
+      offset += 50;
+      pageNum++;
+
+      // Add delay between pages to be respectful
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    // Use enhanced HTML parser
-    const posts = extractPostsFromProfileHTML($, profileUrl);
-
-    // Extract username from page
-    const username = extractUsernameFromProfile($, profileUrl);
-    console.log(`  👤 Found user: ${username}`);
-
-    // Add username to all posts
-    posts.forEach(post => {
-      post.username = username;
-    });
-
-    console.log(`  📋 Found ${posts.length} posts to download`);
-    return posts;
+    console.log(`  📋 Found ${allPosts.length} total posts across ${pageNum} page(s)`);
+    return allPosts;
   }
 
   extractPostId(postUrl) {
