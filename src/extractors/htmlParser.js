@@ -452,10 +452,83 @@ function extractUsernameFromProfile($, profileUrl) {
   return 'unknown_user';
 }
 
+/**
+ * Extract external file hosting links from post HTML
+ * Detects links to mega.nz, Google Drive, Dropbox, MediaFire, etc.
+ */
+function extractExternalLinks($, postUrl) {
+  const externalLinks = [];
+
+  // File hosting domains to detect
+  const fileHostingDomains = [
+    'mega.nz',
+    'mega.co.nz',
+    'drive.google.com',
+    'docs.google.com',
+    'dropbox.com',
+    'mediafire.com',
+    'wetransfer.com',
+    'sendspace.com',
+    'zippyshare.com',
+    'uploaded.net',
+    'rapidgator.net',
+    'pixeldrain.com',
+    'gofile.io',
+    'anonfiles.com',
+    'catbox.moe'
+  ];
+
+  // Check all links in post content
+  $('.post__content a, .post__body a, article a').each((index, element) => {
+    const $link = $(element);
+    const href = $link.attr('href');
+    const text = $link.text().trim();
+
+    if (!href) return;
+
+    // Check if link is to a file hosting service
+    const isFileHosting = fileHostingDomains.some(domain =>
+      href.includes(domain)
+    );
+
+    if (isFileHosting) {
+      // Determine the service
+      let service = 'unknown';
+      for (const domain of fileHostingDomains) {
+        if (href.includes(domain)) {
+          service = domain.split('.')[0]; // e.g., 'mega', 'drive', 'dropbox'
+          break;
+        }
+      }
+
+      externalLinks.push({
+        url: href,
+        service: service,
+        text: text || 'Download',
+        type: 'external-file-hosting'
+      });
+    }
+  });
+
+  // Remove duplicates
+  const uniqueLinks = [];
+  const seenUrls = new Set();
+
+  for (const link of externalLinks) {
+    if (!seenUrls.has(link.url)) {
+      seenUrls.add(link.url);
+      uniqueLinks.push(link);
+    }
+  }
+
+  return uniqueLinks;
+}
+
 module.exports = {
   extractPostsFromProfileHTML,
   extractMediaFromPostHTML,
   extractPostMetadataFromHTML,
   extractUsernameFromProfile,
-  extractPostIdFromUrl
+  extractPostIdFromUrl,
+  extractExternalLinks
 };

@@ -8,7 +8,7 @@ const { getImageName } = require('./utils/urlUtils');
 const { downloadImage, savePostMetadata, saveHtmlContent, readProfilesFile } = require('./utils/fileUtils');
 const { fetchPage, fetchPostsFromAPI, fetchPostFromAPI } = require('./api/kemonoApi');
 const { extractImagesFromPostData, extractImagesFromHTML } = require('./extractors/imageExtractor');
-const { extractPostsFromProfileHTML, extractMediaFromPostHTML, extractPostMetadataFromHTML, extractUsernameFromProfile } = require('./extractors/htmlParser');
+const { extractPostsFromProfileHTML, extractMediaFromPostHTML, extractPostMetadataFromHTML, extractUsernameFromProfile, extractExternalLinks } = require('./extractors/htmlParser');
 const { isPostAlreadyDownloaded, getDownloadStatus, verifyAllImagesDownloaded } = require('./utils/downloadChecker');
 const ConcurrentDownloader = require('./utils/concurrentDownloader');
 const config = require('./utils/config');
@@ -227,6 +227,20 @@ class KemonoDownloader {
 
     if (html) {
       const $ = cheerio.load(html);
+
+      // Extract external file hosting links (mega.nz, Google Drive, etc.)
+      const externalLinks = extractExternalLinks($, post.url);
+      if (externalLinks.length > 0) {
+        console.log(`  🔗 Found ${externalLinks.length} external file hosting link(s):`);
+        externalLinks.forEach(link => {
+          console.log(`     • ${link.service}: ${link.text} - ${link.url}`);
+        });
+
+        // Save external links to a file
+        const linksPath = path.join(postDir, 'external-links.json');
+        await fs.writeFile(linksPath, JSON.stringify(externalLinks, null, 2));
+        console.log(`  💾 Saved external links to external-links.json`);
+      }
 
       // Check if this is SPA content
       const bodyText = $('body').text();
