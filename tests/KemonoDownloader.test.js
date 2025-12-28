@@ -276,7 +276,7 @@ describe('KemonoDownloader', () => {
 
       await downloader.downloadPost(mockPost, 0, 1);
 
-      expect(saveHtmlContent).toHaveBeenCalledWith(expect.any(String), mockHtml);
+      expect(saveHtmlContent).toHaveBeenCalledWith(expect.any(String), mockHtml, mockImages);
       expect(mockConcurrentDownloader.downloadImages).toHaveBeenCalledWith(
         mockImages,
         expect.any(String),

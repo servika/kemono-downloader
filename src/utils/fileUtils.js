@@ -1,8 +1,10 @@
 const fs = require('fs-extra');
 const path = require('path');
 const axios = require('axios');
+const cheerio = require('cheerio');
 const config = require('./config');
 const { delay } = require('./delay');
+const { getImageName } = require('./urlUtils');
 
 /**
  * File and download utilities for images, videos, and archives
@@ -252,9 +254,171 @@ async function savePostMetadata(postDir, postData) {
   await fs.writeFile(metadataPath, JSON.stringify(postData, null, 2));
 }
 
-async function saveHtmlContent(postDir, html) {
+/**
+ * Save HTML content with localized image paths
+ * Replaces remote URLs with local file paths while preserving original URLs
+ */
+async function saveHtmlContent(postDir, html, downloadedImages = []) {
   const htmlPath = path.join(postDir, 'post.html');
-  await fs.writeFile(htmlPath, html);
+
+  try {
+    // Parse HTML with cheerio
+    const $ = cheerio.load(html);
+
+    // Create a map of downloaded files for quick lookup
+    const localFiles = await fs.readdir(postDir).catch(() => []);
+    const fileMap = new Map();
+
+    // Build map of URL to local filename
+    for (const file of localFiles) {
+      if (file === 'post.html' || file === 'post-metadata.json') continue;
+      fileMap.set(file, file);
+    }
+
+    // Also add files from downloadedImages array if provided
+    if (downloadedImages && downloadedImages.length > 0) {
+      downloadedImages.forEach((img, index) => {
+        const url = typeof img === 'string' ? img : img.url;
+        const filename = typeof img === 'string'
+          ? getImageName(img, index)
+          : (img.filename || getImageName(img, index));
+
+        // Try to match by filename
+        if (localFiles.includes(filename)) {
+          fileMap.set(url, filename);
+        }
+      });
+    }
+
+    // Process <img> tags
+    $('img').each((i, elem) => {
+      const $img = $(elem);
+      const src = $img.attr('src');
+      const dataSrc = $img.attr('data-src');
+
+      // Try to find local file for src
+      if (src) {
+        const localFile = findLocalFile(src, fileMap, localFiles);
+        if (localFile) {
+          $img.attr('data-original-src', src); // Preserve original URL
+          $img.attr('src', localFile); // Replace with local path
+        }
+      }
+
+      // Try to find local file for data-src
+      if (dataSrc) {
+        const localFile = findLocalFile(dataSrc, fileMap, localFiles);
+        if (localFile) {
+          $img.attr('data-original-data-src', dataSrc); // Preserve original URL
+          $img.attr('data-src', localFile); // Replace with local path
+        }
+      }
+    });
+
+    // Process <video> tags
+    $('video').each((i, elem) => {
+      const $video = $(elem);
+      const src = $video.attr('src');
+
+      if (src) {
+        const localFile = findLocalFile(src, fileMap, localFiles);
+        if (localFile) {
+          $video.attr('data-original-src', src);
+          $video.attr('src', localFile);
+        }
+      }
+    });
+
+    // Process <source> tags (inside video/audio)
+    $('source').each((i, elem) => {
+      const $source = $(elem);
+      const src = $source.attr('src');
+
+      if (src) {
+        const localFile = findLocalFile(src, fileMap, localFiles);
+        if (localFile) {
+          $source.attr('data-original-src', src);
+          $source.attr('src', localFile);
+        }
+      }
+    });
+
+    // Process download links (a[download] or a[href$='.zip'] etc)
+    $('a[download], a[href*="/data/"], a.fileThumb, a.post__attachment-link').each((i, elem) => {
+      const $link = $(elem);
+      const href = $link.attr('href');
+
+      if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+        const localFile = findLocalFile(href, fileMap, localFiles);
+        if (localFile) {
+          $link.attr('data-original-href', href); // Preserve original URL
+          $link.attr('href', localFile); // Replace with local path
+        }
+      }
+    });
+
+    // Add a meta tag to indicate this is a localized version
+    $('head').prepend(`
+      <meta name="kemono-downloader" content="localized">
+      <meta name="kemono-downloader-note" content="Image URLs have been replaced with local paths. Original URLs preserved in data-original-* attributes.">
+      <style>
+        /* Add visual indicator for localized content */
+        body::before {
+          content: "📁 Offline Version - Images loaded locally";
+          display: block;
+          background: #f0f0f0;
+          padding: 10px;
+          text-align: center;
+          font-family: system-ui, sans-serif;
+          border-bottom: 2px solid #ddd;
+          position: sticky;
+          top: 0;
+          z-index: 1000;
+        }
+      </style>
+    `);
+
+    // Save the processed HTML
+    await fs.writeFile(htmlPath, $.html());
+
+  } catch (error) {
+    // If processing fails, save original HTML as fallback
+    console.error(`⚠️  Failed to process HTML for localization: ${error.message}`);
+    console.error(`   Saving original HTML instead`);
+    await fs.writeFile(htmlPath, html);
+  }
+}
+
+/**
+ * Helper function to find local file matching a remote URL
+ */
+function findLocalFile(url, fileMap, localFiles) {
+  if (!url) return null;
+
+  // Direct match in fileMap
+  if (fileMap.has(url)) {
+    return fileMap.get(url);
+  }
+
+  // Try to extract filename from URL
+  const urlObj = new URL(url, 'https://kemono.cr'); // Base URL for relative paths
+  const urlPath = urlObj.pathname;
+  const filename = path.basename(urlPath);
+
+  // Check if this filename exists locally
+  if (localFiles.includes(filename)) {
+    return filename;
+  }
+
+  // Try to match by partial filename (useful for sanitized names)
+  const filenameWithoutExt = filename.replace(/\.[^.]+$/, '');
+  for (const localFile of localFiles) {
+    if (localFile.includes(filenameWithoutExt) || filenameWithoutExt.includes(localFile.replace(/\.[^.]+$/, ''))) {
+      return localFile;
+    }
+  }
+
+  return null;
 }
 
 async function readProfilesFile(filename) {

@@ -228,10 +228,6 @@ class KemonoDownloader {
     if (html) {
       const $ = cheerio.load(html);
 
-      // Save HTML content
-      await saveHtmlContent(postDir, html);
-      console.log(`  💾 Saved HTML content`);
-
       // Check if this is SPA content
       const bodyText = $('body').text();
       let images = [];
@@ -265,9 +261,17 @@ class KemonoDownloader {
           }
         );
 
+        // Save HTML content AFTER downloading images so we can localize URLs
+        await saveHtmlContent(postDir, html, images);
+        console.log(`  💾 Saved HTML content with localized image paths`);
+
         this.stats.postsDownloaded++;
         console.log(`  ✅ Post ${post.id} completed - saved to ${postDir}`);
         return;
+      } else {
+        // No images, just save the HTML as-is
+        await saveHtmlContent(postDir, html);
+        console.log(`  💾 Saved HTML content`);
       }
     }
 
