@@ -10,6 +10,7 @@ A Node.js application for downloading posts and images from kemono.cr profiles w
 - **Thumbnail Upgrade System**: Automatically detects and upgrades small files (<500KB) to full resolution
 - **Thumbnail Fallback**: Downloads full resolution first, falls back to thumbnail on 404 errors
 - **Browser Automation**: Integrated Puppeteer with stealth mode for anti-bot bypass
+- **Mega.nz Download Support**: Automatically detects and downloads files/folders from mega.nz links found in posts
 - **Anti-Bot Detection**: Proper HTTP headers (Referer, Origin, Sec-Fetch-*) to bypass protection
 - **Retry Logic**: Automatic retry with exponential backoff (5s → 10s → 20s) for failed downloads
 - **Multiple Data Sources**: Uses API endpoints with comprehensive HTML fallback for maximum compatibility

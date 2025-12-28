@@ -13,6 +13,7 @@ const { isPostAlreadyDownloaded, getDownloadStatus, verifyAllImagesDownloaded } 
 const ConcurrentDownloader = require('./utils/concurrentDownloader');
 const config = require('./utils/config');
 const browserClient = require('./utils/browserClient');
+const { downloadMegaLink, formatBytes } = require('./utils/megaDownloader');
 
 class KemonoDownloader {
   constructor() {
@@ -240,6 +241,32 @@ class KemonoDownloader {
         const linksPath = path.join(postDir, 'external-links.json');
         await fs.writeFile(linksPath, JSON.stringify(externalLinks, null, 2));
         console.log(`  💾 Saved external links to external-links.json`);
+
+        // Download mega.nz links automatically
+        const megaLinks = externalLinks.filter(link => link.service === 'mega');
+        if (megaLinks.length > 0) {
+          console.log(`  🔗 Found ${megaLinks.length} mega.nz link(s) to download`);
+
+          const megaDir = path.join(postDir, 'mega_downloads');
+
+          for (const megaLink of megaLinks) {
+            try {
+              const stats = await downloadMegaLink(
+                megaLink.url,
+                megaDir,
+                (msg) => console.log(`    ${msg}`)
+              );
+
+              this.stats.imagesDownloaded += stats.filesDownloaded;
+              this.stats.errors += stats.filesFailed;
+
+              console.log(`  ✅ MEGA download complete: ${stats.filesDownloaded} files, ${formatBytes(stats.totalSize)}`);
+            } catch (error) {
+              this.stats.errors++;
+              console.log(`  ❌ MEGA download failed: ${error.message}`);
+            }
+          }
+        }
       }
 
       // Check if this is SPA content
