@@ -226,8 +226,21 @@ class BrowserClient {
         timeout: 45000
       });
 
-      // Wait for JavaScript to render images
-      await delay(3000);
+      // Wait longer for JavaScript to render images (increased from 3s to 8s)
+      await delay(8000);
+
+      // Debug: Save rendered HTML to file for inspection
+      const debugMode = config.get('logging.debugBrowserExtraction', false);
+      if (debugMode) {
+        const fs = require('fs-extra');
+        const path = require('path');
+        const html = await this.page.content();
+        const debugDir = path.join(process.cwd(), 'debug');
+        await fs.ensureDir(debugDir);
+        const postId = url.split('/').pop();
+        await fs.writeFile(path.join(debugDir, `post-${postId}-rendered.html`), html);
+        if (onLog) onLog(`   🐛 Saved rendered HTML to debug/post-${postId}-rendered.html`);
+      }
 
       // Extract image and video URLs from the rendered page
       const mediaUrls = await this.page.evaluate(() => {

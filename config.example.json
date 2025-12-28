@@ -13,6 +13,7 @@
     "baseUrl": "https://kemono.cr",
     "timeout": 45000,
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "skipAPIFallback": false,
     "cookies": {
       "session": ""
     }
@@ -26,6 +27,7 @@
   "logging": {
     "verboseProgress": true,
     "showSkippedFiles": true,
-    "showDetailedErrors": true
+    "showDetailedErrors": true,
+    "debugBrowserExtraction": false
   }
 }
