@@ -7,8 +7,12 @@ A Node.js application for downloading posts and images from kemono.cr profiles w
 - **Bulk Profile Processing**: Download from multiple profiles using a simple text file
 - **Concurrent Downloads**: Configurable concurrent image downloads for faster processing
 - **Smart Resume**: Automatically detects and skips already downloaded content
-- **Retry Logic**: Automatic retry with exponential backoff for failed downloads
-- **Multiple Data Sources**: Uses API endpoints with HTML fallback for maximum compatibility
+- **Thumbnail Upgrade System**: Automatically detects and upgrades small files (<500KB) to full resolution
+- **Thumbnail Fallback**: Downloads full resolution first, falls back to thumbnail on 404 errors
+- **Browser Automation**: Integrated Puppeteer with stealth mode for anti-bot bypass
+- **Anti-Bot Detection**: Proper HTTP headers (Referer, Origin, Sec-Fetch-*) to bypass protection
+- **Retry Logic**: Automatic retry with exponential backoff (5s → 10s → 20s) for failed downloads
+- **Multiple Data Sources**: Uses API endpoints with comprehensive HTML fallback for maximum compatibility
 - **Robust Error Handling**: Comprehensive error handling with detailed logging
 - **Configurable Settings**: Extensive configuration options via `config.json`
 - **Progress Tracking**: Real-time progress bars and detailed statistics
@@ -199,9 +203,16 @@ For server-friendly downloads:
 
 ## Dependencies
 
+### Production
 - **axios**: HTTP client for API requests and downloads
 - **cheerio**: Server-side jQuery implementation for HTML parsing
 - **fs-extra**: Enhanced file system operations
+- **puppeteer-extra**: Browser automation with stealth mode for anti-bot bypass
+- **puppeteer-extra-plugin-stealth**: Stealth plugin to avoid detection
+
+### Development
+- **jest**: Testing framework with comprehensive test suite (218 tests)
+- **@jest/globals**: Jest utilities for modern testing
 
 ## License
 
@@ -221,17 +232,22 @@ Based on code review and analysis, here are prioritized improvements to enhance 
 
 ### High Priority
 
-#### Testing & Quality ✅ Target Achieved: 87%+ Coverage
-- **Excellent test coverage across all critical components**:
+#### Testing & Quality ✅ Target: 90%+ Coverage (Current: 79.83%)
+- **218 passing tests** across 11 test suites
+- **Good test coverage across most components**:
   - `concurrentDownloader.js` (98.64% statements) ✅ - Comprehensive tests for semaphore logic, error handling, and concurrency
   - `fileUtils.js` (95.38% statements) ✅ - Complete coverage of stream handling, retry logic, and file operations
-  - `KemonoDownloader.js` (91.58% statements) ✅ - Integration tests for complete download workflows
-  - `kemonoApi.js` (88% statements) ✅ - Full coverage of pagination, rate limiting, and error scenarios
-  - `imageExtractor.js` (89.51% statements) ✅ - Comprehensive media extraction tests
+  - `htmlParser.js` (100% statements) ✅ - Full coverage with 19 comprehensive tests for all parsing strategies
   - `urlUtils.js` (100% statements) ✅ - Complete URL validation and parsing coverage
   - `config.js` (98.21% statements) ✅ - Configuration management fully tested
   - `delay.js` (100% statements) ✅ - Full coverage
-- **Overall Project Coverage**: 87.27% statements, 84.21% functions, 88.51% lines
+  - `imageExtractor.js` (89.51% statements) ✅ - Comprehensive media extraction tests
+  - `KemonoDownloader.js` (88.5% statements) ✅ - Integration tests for complete download workflows
+- **Areas needing improvement**:
+  - `browserClient.js` (64.02% statements) - Browser automation edge cases need more tests
+  - `kemonoApi.js` (49.59% statements) - API edge cases and error scenarios need coverage
+  - `downloadChecker.js` (66.94% statements) - Download verification needs more edge case tests
+- **Overall Project Coverage**: 79.83% statements, 61.36% branches, 80.12% functions, 81.26% lines
 - **Add integration tests** with real API calls using recorded responses
 - **Add E2E tests** for complete download scenarios
 
@@ -341,8 +357,28 @@ Add observability to understand system behavior:
 
 ## Changelog
 
-### Latest Version
+### Version 1.2.0 (Latest)
+- **Thumbnail Upgrade System**: Automatically detects and upgrades small files (<500KB) to full resolution
+- **Thumbnail Fallback**: Downloads full resolution first, falls back to thumbnail on 404 errors
+- **Browser Automation**: Integrated Puppeteer with stealth mode for anti-bot bypass
+- **Anti-Bot Detection**: Proper HTTP headers (Referer, Origin, Sec-Fetch-*) to bypass 403 errors
+- **Enhanced HTML Parser**: Comprehensive HTML parsing with 4 fallback strategies and 100% test coverage
+- **Exponential Backoff**: Retry logic with 5s → 10s → 20s delays for failed requests
+- **Test Coverage Improvements**: 218 passing tests, improved coverage from 62% to 79.83%
+- Added comprehensive tests for htmlParser.js (19 new tests)
+- Improved test coverage for concurrentDownloader.js (98.64%)
+- Fixed all failing tests and import path issues
+
+### Version 1.1.0
 - Fixed stream destruction error in download handling
 - Improved error handling and recovery
 - Enhanced concurrent download management
 - Better progress tracking and logging
+- Domain migration from kemono.party to kemono.cr
+
+### Version 1.0.0
+- Initial public release
+- Bulk profile processing
+- Concurrent downloads with configurable limits
+- Retry logic and error handling
+- API endpoints with HTML fallback
