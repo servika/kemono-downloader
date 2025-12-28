@@ -185,17 +185,15 @@ async function fetchPostsFromAPI(service, userId, onLog) {
             }
           }
 
-          // The Kemono API doesn't support pagination via query parameters
-          // Try HTML scraping to get all posts from the profile page
+          // Check if there might be more pages (Kemono typically uses 50 posts per page)
           if (postsData.length === 50) {
-            // If we got exactly 50 posts, there might be more
-            if (onLog) onLog(`ℹ️  Got exactly 50 posts - trying HTML scraping for complete list...`);
-            const htmlPosts = await fetchPostsFromHTML(service, userId, allPosts, onLog, profileName);
-            if (htmlPosts > 0) {
-              if (onLog) onLog(`✅ HTML scraping found ${htmlPosts} additional posts beyond API limit`);
-            } else {
-              if (onLog) onLog(`ℹ️  No additional posts found via HTML scraping`);
-            }
+            // If we got exactly 50 posts, there are likely more pages
+            if (onLog) onLog(`📚 Got exactly 50 posts - attempting pagination to fetch remaining posts...`);
+
+            // Try API pagination first (most efficient)
+            await fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profileName);
+
+            if (onLog) onLog(`✅ Pagination complete - total ${allPosts.length} posts collected`);
           }
 
           if (allPosts.length > 0) {
@@ -334,80 +332,123 @@ async function fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profi
 async function fetchPostsFromHTML(service, userId, allPosts, onLog, profileName) {
   const cheerio = require('cheerio');
   const baseUrl = config.getBaseUrl();
-  const profileUrl = `${baseUrl}/${service}/user/${userId}`;
+  let totalNewPosts = 0;
+  let offset = 0;
+  let hasMorePages = true;
+  let pageNum = 1;
+  let consecutiveEmptyPages = 0;
 
   try {
-    // Get the first page HTML
-    const html = await browserClient.fetchRenderedPage(profileUrl, onLog);
-    if (!html) {
-      return 0;
-    }
+    while (hasMorePages) {
+      // Build URL with offset for pagination
+      const profileUrl = offset === 0
+        ? `${baseUrl}/${service}/user/${userId}`
+        : `${baseUrl}/${service}/user/${userId}?o=${offset}`;
 
-    const $ = cheerio.load(html);
-    let newPostsCount = 0;
-    const existingIds = new Set(allPosts.map(p => p.id));
+      if (onLog) onLog(`📄 HTML scraping page ${pageNum} (offset ${offset}): ${profileUrl}`);
 
-    // Try different common post card selectors
-    const selectors = [
-      'article.post-card',
-      '.post-card',
-      'article[data-id]',
-      '.card--post',
-      'a[href*="/post/"]'
-    ];
+      const html = await browserClient.fetchRenderedPage(profileUrl, onLog);
+      if (!html) {
+        if (onLog) onLog(`⚠️  Failed to fetch HTML for page ${pageNum}`);
+        break;
+      }
 
-    for (const selector of selectors) {
-      const postElements = $(selector);
+      const $ = cheerio.load(html);
+      let pageNewPosts = 0;
+      const existingIds = new Set(allPosts.map(p => p.id));
 
-      if (postElements.length > 0) {
-        if (onLog) onLog(`🔍 Found ${postElements.length} post elements with selector: ${selector}`);
+      // Try different common post card selectors
+      const selectors = [
+        'article.post-card',
+        '.post-card',
+        'article[data-id]',
+        '.card--post',
+        'a[href*="/post/"]'
+      ];
 
-        postElements.each((i, elem) => {
-          // Try to extract post ID and URL
-          const $elem = $(elem);
-          let postId = $elem.attr('data-id') || $elem.attr('data-post-id');
-          let href = $elem.attr('href') || $elem.find('a').first().attr('href');
+      for (const selector of selectors) {
+        const postElements = $(selector);
 
-          // Extract ID from href if not in data attribute
-          if (!postId && href) {
-            const match = href.match(/\/post\/(\d+)/);
-            if (match) {
-              postId = match[1];
+        if (postElements.length > 0) {
+          if (pageNum === 1 && onLog) {
+            onLog(`🔍 Found ${postElements.length} post elements with selector: ${selector}`);
+          }
+
+          postElements.each((i, elem) => {
+            // Try to extract post ID and URL
+            const $elem = $(elem);
+            let postId = $elem.attr('data-id') || $elem.attr('data-post-id');
+            let href = $elem.attr('href') || $elem.find('a').first().attr('href');
+
+            // Extract ID from href if not in data attribute
+            if (!postId && href) {
+              const match = href.match(/\/post\/(\d+)/);
+              if (match) {
+                postId = match[1];
+              }
             }
+
+            // Build full URL if needed
+            if (href && !href.startsWith('http')) {
+              href = `${baseUrl}${href}`;
+            }
+
+            // Get title
+            const title = $elem.find('.post__title, .post-title, h2, h3, header.post-card__header').first().text().trim() || 'Untitled';
+
+            if (postId && !existingIds.has(postId)) {
+              const postUrl = href || `${baseUrl}/${service}/user/${userId}/post/${postId}`;
+              allPosts.push({
+                url: postUrl,
+                id: postId,
+                username: profileName || `user_${userId}`,
+                title: title
+              });
+              existingIds.add(postId);
+              pageNewPosts++;
+            }
+          });
+
+          if (pageNewPosts > 0) {
+            break; // Found working selector
           }
-
-          // Build full URL if needed
-          if (href && !href.startsWith('http')) {
-            href = `${baseUrl}${href}`;
-          }
-
-          // Get title
-          const title = $elem.find('.post__title, .post-title, h2, h3').first().text().trim() || 'Untitled';
-
-          if (postId && !existingIds.has(postId)) {
-            const postUrl = href || `${baseUrl}/${service}/user/${userId}/post/${postId}`;
-            allPosts.push({
-              url: postUrl,
-              id: postId,
-              username: profileName || `user_${userId}`,
-              title: title
-            });
-            existingIds.add(postId);
-            newPostsCount++;
-          }
-        });
-
-        if (newPostsCount > 0) {
-          break; // Found working selector
         }
+      }
+
+      if (pageNewPosts === 0) {
+        consecutiveEmptyPages++;
+        if (consecutiveEmptyPages >= 2) {
+          if (onLog) onLog(`📄 No new posts found on page ${pageNum} - stopping HTML pagination`);
+          hasMorePages = false;
+        }
+      } else {
+        consecutiveEmptyPages = 0;
+        totalNewPosts += pageNewPosts;
+        if (onLog) onLog(`✅ HTML page ${pageNum}: Found ${pageNewPosts} new posts (total: ${totalNewPosts})`);
+      }
+
+      // Move to next page
+      offset += 50; // Kemono uses 50 posts per page
+      pageNum++;
+
+      // Safety limit
+      if (pageNum > 20) {
+        if (onLog) onLog(`⚠️  Reached HTML pagination safety limit of 20 pages`);
+        hasMorePages = false;
+      }
+
+      // Add delay between pages
+      if (hasMorePages) {
+        const pageDelay = config.getConfigValue('download.delayBetweenPages') || 1000;
+        await delay(pageDelay);
       }
     }
 
-    return newPostsCount;
+    return totalNewPosts;
 
   } catch (error) {
     if (onLog) onLog(`❌ HTML scraping failed: ${error.message}`);
-    return 0;
+    return totalNewPosts; // Return what we got so far
   }
 }
 
