@@ -84,6 +84,30 @@ class BrowserClient {
     console.log('✅ Browser ready');
   }
 
+  async navigateToPage(url, onLog) {
+    if (!this.isInitialized) {
+      await this.initialize();
+    }
+
+    try {
+      if (onLog) onLog(`🔗 Setting browser context: ${url}`);
+
+      // Navigate to the page to establish proper browser context
+      await this.page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+
+      // Small delay to let the session establish
+      await delay(1000);
+
+      if (onLog) onLog(`✅ Browser context set`);
+    } catch (error) {
+      if (onLog) onLog(`⚠️  Could not navigate to page (continuing anyway): ${error.message}`);
+      // Don't throw - we can still try to make API requests
+    }
+  }
+
   async fetchJSON(url, onLog) {
     if (!this.isInitialized) {
       await this.initialize();
@@ -96,11 +120,21 @@ class BrowserClient {
       // This allows us to make API calls with full browser session/cookies
       const result = await this.page.evaluate(async (apiUrl) => {
         try {
+          // Parse URL to get base URL for referrer
+          const urlObj = new URL(apiUrl);
+          const baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+          const pathWithoutQuery = `${baseUrl}${urlObj.pathname}`;
+
           const response = await fetch(apiUrl, {
             method: 'GET',
             headers: {
               'Accept': 'application/json',
-              'Content-Type': 'application/json'
+              'Content-Type': 'application/json',
+              'Referer': pathWithoutQuery,
+              'Origin': baseUrl,
+              'Sec-Fetch-Dest': 'empty',
+              'Sec-Fetch-Mode': 'cors',
+              'Sec-Fetch-Site': 'same-origin'
             },
             credentials: 'same-origin'
           });
@@ -155,14 +189,15 @@ class BrowserClient {
     try {
       if (onLog) onLog(`🌐 Browser navigating to: ${url}`);
 
-      // Navigate to the page
+      // Navigate to the page with less strict waiting condition
+      // Use 'load' instead of 'networkidle0' to avoid timeout on slow pages
       await this.page.goto(url, {
-        waitUntil: 'networkidle0',
-        timeout: 45000
+        waitUntil: 'load',
+        timeout: 60000
       });
 
-      // Wait for potential JavaScript rendering
-      await delay(3000);
+      // Wait for potential JavaScript rendering and dynamic content
+      await delay(5000);
 
       // Get the rendered HTML
       const html = await this.page.content();
@@ -198,30 +233,54 @@ class BrowserClient {
       const mediaUrls = await this.page.evaluate(() => {
         const urls = [];
 
-        // Find all image elements
-        const images = document.querySelectorAll('img.fileThumb, img.post__image, img[data-src], article img, .post__files img, .post__attachment img');
-        images.forEach(img => {
-          const src = img.src || img.dataset.src || img.getAttribute('data-src');
-          if (src && !src.includes('icon') && !src.includes('avatar') && !src.includes('logo')) {
-            urls.push(src);
+        // Helper function to convert thumbnail URLs to full URLs
+        function convertThumbnailUrl(url) {
+          if (!url) return url;
+
+          // Replace thumbnail paths with full paths
+          if (url.includes('/thumbnail/')) {
+            url = url.replace('/thumbnail/', '/data/');
+          }
+          if (url.includes('_thumb.')) {
+            url = url.replace('_thumb.', '.');
+          }
+          if (url.includes('.thumb.')) {
+            url = url.replace('.thumb.', '.');
+          }
+
+          return url;
+        }
+
+        // Priority 1: Find all download links (these are full-size)
+        const links = document.querySelectorAll('a.post__attachment-link, a.fileThumb, a[download], a[href*="/data/"], a[href*=".jpg"], a[href*=".png"], a[href*=".gif"], a[href*=".webp"], a[href*=".mp4"], a[href*=".webm"]');
+        links.forEach(link => {
+          const href = link.href;
+          if (href && !href.includes('icon') && !href.includes('avatar') && !href.includes('logo')) {
+            urls.push(href);
           }
         });
 
-        // Find all video elements
+        // Priority 2: Find image elements and convert thumbnails
+        const images = document.querySelectorAll('img.post__image, img[data-src], article img, .post__files img, .post__attachment img');
+        images.forEach(img => {
+          let src = img.src || img.dataset.src || img.getAttribute('data-src');
+          if (src && !src.includes('icon') && !src.includes('avatar') && !src.includes('logo')) {
+            // Convert thumbnail URL to full URL
+            src = convertThumbnailUrl(src);
+
+            // Only add if not already in list
+            if (!urls.includes(src)) {
+              urls.push(src);
+            }
+          }
+        });
+
+        // Priority 3: Find video elements
         const videos = document.querySelectorAll('video source, video');
         videos.forEach(video => {
           const src = video.src || video.dataset.src || video.getAttribute('data-src');
-          if (src) {
+          if (src && !urls.includes(src)) {
             urls.push(src);
-          }
-        });
-
-        // Find all download links
-        const links = document.querySelectorAll('a.post__attachment-link, a.fileThumb, a[download], a[href*=".jpg"], a[href*=".png"], a[href*=".gif"], a[href*=".webp"], a[href*=".mp4"], a[href*=".webm"]');
-        links.forEach(link => {
-          const href = link.href;
-          if (href && !urls.includes(href)) {
-            urls.push(href);
           }
         });
 

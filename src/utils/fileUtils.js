@@ -13,23 +13,40 @@ async function downloadMedia(mediaUrl, filepath, onProgress) {
   return downloadImage(mediaUrl, filepath, onProgress);
 }
 
-async function downloadMediaWithRetry(mediaUrl, filepath, onProgress) {
+async function downloadMediaWithRetry(mediaUrl, filepath, onProgress, thumbnailUrl = null) {
   // Use the same retry logic for both images and videos
-  return downloadImageWithRetry(mediaUrl, filepath, onProgress);
+  return downloadImageWithRetry(mediaUrl, filepath, onProgress, thumbnailUrl);
 }
 
-async function downloadImageWithRetry(imageUrl, filepath, onProgress) {
+async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailUrl = null) {
   const retryAttempts = config.getRetryAttempts();
   const retryDelay = config.getRetryDelay();
+  let lastError = null;
 
+  // Try downloading full resolution first
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
     try {
       await downloadImage(imageUrl, filepath, onProgress);
       return; // Success, exit retry loop
     } catch (error) {
+      lastError = error;
+
+      // If we get 404 and have a thumbnail fallback, try it immediately
+      if (error.response?.status === 404 && thumbnailUrl && thumbnailUrl !== imageUrl) {
+        if (onProgress) onProgress(`⚠️  Full resolution not found, trying thumbnail...`);
+        try {
+          await downloadImage(thumbnailUrl, filepath, onProgress);
+          if (onProgress) onProgress(`✅ Downloaded thumbnail (full resolution unavailable)`);
+          return; // Success with thumbnail
+        } catch (thumbnailError) {
+          // Thumbnail also failed, continue with original retry logic
+          lastError = thumbnailError;
+        }
+      }
+
       if (attempt === retryAttempts) {
         // Final attempt failed
-        throw error;
+        throw lastError;
       } else {
         // Check if we should retry based on error type
         const shouldRetry = error.response?.status >= 500 ||
@@ -44,8 +61,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress) {
           if (onProgress) onProgress(`🔄 Retrying ${path.basename(filepath)} (attempt ${attempt + 1}/${retryAttempts})`);
           await delay(retryDelay);
         } else {
-          // Don't retry for client errors like 404
-          throw error;
+          // Don't retry for other client errors
+          throw lastError;
         }
       }
     }

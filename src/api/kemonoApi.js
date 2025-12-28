@@ -62,10 +62,15 @@ async function makeRequestWithRetry(url, onLog) {
         if (onLog) onLog(`❌ Failed after ${retryAttempts} attempts: ${url} - ${errorMessage}`);
         throw error;
       } else {
-        // Retry for server errors (5xx) and rate limiting (429)
+        // Retry for server errors (5xx) and rate limiting (429, 403)
         if (statusCode >= 500 || statusCode === 429 || statusCode === 403) {
-          if (onLog) onLog(`🔄 Retrying ${url} (attempt ${attempt + 1}/${retryAttempts}) - Status: ${statusCode}`);
-          await delay(retryDelay);
+          // Use exponential backoff for 403 errors (likely rate limiting/anti-bot)
+          const backoffDelay = statusCode === 403
+            ? retryDelay * Math.pow(2, attempt - 1)
+            : retryDelay;
+
+          if (onLog) onLog(`🔄 Retrying ${url} (attempt ${attempt + 1}/${retryAttempts}) - Status: ${statusCode}, waiting ${backoffDelay}ms`);
+          await delay(backoffDelay);
         } else {
           // Don't retry for client errors like 404
           if (onLog) onLog(`❌ Request failed with status ${statusCode}: ${url} - ${errorMessage}`);
@@ -98,6 +103,10 @@ async function fetchPostsFromAPI(service, userId, onLog) {
   const baseUrl = config.getBaseUrl();
 
   try {
+    // Navigate to profile page first to establish proper browser context
+    const profilePageUrl = `${baseUrl}/${service}/user/${userId}`;
+    await browserClient.navigateToPage(profilePageUrl, onLog);
+
     // First, try to get profile information
     const profileUrls = [
       `${baseUrl}/api/v1/${service}/user/${userId}/profile`,
@@ -134,6 +143,12 @@ async function fetchPostsFromAPI(service, userId, onLog) {
         const response = await makeRequestWithRetry(baseApiUrl, onLog);
         if (onLog) onLog(`✅ API response received (${JSON.stringify(response.data).length} chars)`);
 
+        // Debug: Check for pagination metadata
+        if (onLog && !Array.isArray(response.data)) {
+          const keys = Object.keys(response.data);
+          if (onLog) onLog(`📊 Response structure: ${keys.join(', ')}`);
+        }
+
         // Handle different response formats
         let postsData = response.data;
         if (Array.isArray(postsData)) {
@@ -152,6 +167,11 @@ async function fetchPostsFromAPI(service, userId, onLog) {
         if (postsData.length > 0) {
           if (onLog) onLog(`✅ Found working API endpoint with ${postsData.length} posts on first page`);
 
+          // Check if we got fewer posts than expected - might indicate no more pages
+          if (postsData.length < 50) {
+            if (onLog) onLog(`ℹ️  Only ${postsData.length} posts returned - might be all posts available`);
+          }
+
           // Add posts from first page
           for (const post of postsData) {
             if (post.id) {
@@ -165,8 +185,18 @@ async function fetchPostsFromAPI(service, userId, onLog) {
             }
           }
 
-          // Now paginate through remaining pages
-          await fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profileName);
+          // The Kemono API doesn't support pagination via query parameters
+          // Try HTML scraping to get all posts from the profile page
+          if (postsData.length === 50) {
+            // If we got exactly 50 posts, there might be more
+            if (onLog) onLog(`ℹ️  Got exactly 50 posts - trying HTML scraping for complete list...`);
+            const htmlPosts = await fetchPostsFromHTML(service, userId, allPosts, onLog, profileName);
+            if (htmlPosts > 0) {
+              if (onLog) onLog(`✅ HTML scraping found ${htmlPosts} additional posts beyond API limit`);
+            } else {
+              if (onLog) onLog(`ℹ️  No additional posts found via HTML scraping`);
+            }
+          }
 
           if (allPosts.length > 0) {
             if (onLog) onLog(`✅ Successfully collected ${allPosts.length} total posts with pagination`);
@@ -194,6 +224,7 @@ async function fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profi
   let offset = 50; // Kemono typically uses 50 posts per page
   let hasMorePages = true;
   let pageNum = 2;
+  let consecutiveFailures = 0;
 
   while (hasMorePages) {
     try {
@@ -252,6 +283,7 @@ async function fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profi
 
           if (onLog) onLog(`✅ Page ${pageNum}: Found ${newPostsCount} new posts (${postsData.length} total on page)`);
           pageFound = true;
+          consecutiveFailures = 0; // Reset failure counter
           break; // This pagination format works, move to next page
 
         } catch (pageError) {
@@ -261,7 +293,19 @@ async function fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profi
       }
 
       if (!pageFound) {
-        if (onLog) onLog(`❌ No working pagination format found for page ${pageNum}`);
+        consecutiveFailures++;
+
+        // If we've tried pagination and it keeps failing, try HTML scraping as fallback
+        if (consecutiveFailures === 1) {
+          if (onLog) onLog(`⚠️  API pagination failed - trying HTML scraping fallback...`);
+          const htmlPosts = await fetchPostsFromHTML(service, userId, allPosts, onLog, profileName);
+          if (htmlPosts > 0) {
+            if (onLog) onLog(`✅ HTML scraping found ${htmlPosts} additional posts`);
+            return; // HTML scraping succeeded, we're done
+          }
+        }
+
+        if (onLog) onLog(`❌ No working pagination method found`);
         hasMorePages = false;
         break;
       }
@@ -269,8 +313,10 @@ async function fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profi
       offset += 50;
       pageNum++;
 
-      // Add delay between pages to be respectful
-      await delay(1000);
+      // Add delay between pages to be respectful and avoid rate limiting
+      const pageDelay = config.getConfigValue('download.delayBetweenPages') || 5000;
+      if (onLog) onLog(`⏰ Waiting ${pageDelay}ms before next page...`);
+      await delay(pageDelay);
 
       // Safety limit to prevent infinite loops
       if (pageNum > 100) {
@@ -282,6 +328,86 @@ async function fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profi
       if (onLog) onLog(`❌ Error fetching page ${pageNum}: ${error.message}`);
       hasMorePages = false;
     }
+  }
+}
+
+async function fetchPostsFromHTML(service, userId, allPosts, onLog, profileName) {
+  const cheerio = require('cheerio');
+  const baseUrl = config.getBaseUrl();
+  const profileUrl = `${baseUrl}/${service}/user/${userId}`;
+
+  try {
+    // Get the first page HTML
+    const html = await browserClient.fetchRenderedPage(profileUrl, onLog);
+    if (!html) {
+      return 0;
+    }
+
+    const $ = cheerio.load(html);
+    let newPostsCount = 0;
+    const existingIds = new Set(allPosts.map(p => p.id));
+
+    // Try different common post card selectors
+    const selectors = [
+      'article.post-card',
+      '.post-card',
+      'article[data-id]',
+      '.card--post',
+      'a[href*="/post/"]'
+    ];
+
+    for (const selector of selectors) {
+      const postElements = $(selector);
+
+      if (postElements.length > 0) {
+        if (onLog) onLog(`🔍 Found ${postElements.length} post elements with selector: ${selector}`);
+
+        postElements.each((i, elem) => {
+          // Try to extract post ID and URL
+          const $elem = $(elem);
+          let postId = $elem.attr('data-id') || $elem.attr('data-post-id');
+          let href = $elem.attr('href') || $elem.find('a').first().attr('href');
+
+          // Extract ID from href if not in data attribute
+          if (!postId && href) {
+            const match = href.match(/\/post\/(\d+)/);
+            if (match) {
+              postId = match[1];
+            }
+          }
+
+          // Build full URL if needed
+          if (href && !href.startsWith('http')) {
+            href = `${baseUrl}${href}`;
+          }
+
+          // Get title
+          const title = $elem.find('.post__title, .post-title, h2, h3').first().text().trim() || 'Untitled';
+
+          if (postId && !existingIds.has(postId)) {
+            const postUrl = href || `${baseUrl}/${service}/user/${userId}/post/${postId}`;
+            allPosts.push({
+              url: postUrl,
+              id: postId,
+              username: profileName || `user_${userId}`,
+              title: title
+            });
+            existingIds.add(postId);
+            newPostsCount++;
+          }
+        });
+
+        if (newPostsCount > 0) {
+          break; // Found working selector
+        }
+      }
+    }
+
+    return newPostsCount;
+
+  } catch (error) {
+    if (onLog) onLog(`❌ HTML scraping failed: ${error.message}`);
+    return 0;
   }
 }
 

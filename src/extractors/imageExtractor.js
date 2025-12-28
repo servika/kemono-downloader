@@ -224,44 +224,91 @@ function extractMediaFromPostData(postData) {
 
 function extractMediaFromHTML($) {
   const mediaFiles = [];
-  
-  // Find images in post content
-  $('.post__content img, .post__thumbnail img, .post__attachment img').each((index, element) => {
-    const imgSrc = $(element).attr('src') || $(element).attr('data-src');
-    if (imgSrc) {
-      const imageUrl = imgSrc.startsWith('http') ? imgSrc : `https://kemono.cr${imgSrc}`;
-      mediaFiles.push({ url: imageUrl, mediaType: 'image', type: 'html' });
+  const addedUrls = new Set(); // Track URLs to avoid duplicates
+
+  /**
+   * Helper function to check if URL is a thumbnail
+   */
+  function isThumbnailUrl(url) {
+    return url && (url.includes('/thumbnail/') || url.includes('img.kemono.cr/thumbnail'));
+  }
+
+  /**
+   * Helper function to add media file if not duplicate or thumbnail
+   */
+  function addMediaFile(url, mediaType) {
+    if (!url || isThumbnailUrl(url) || addedUrls.has(url)) {
+      return false;
+    }
+
+    const fullUrl = url.startsWith('//') ? `https:${url}` :
+                    url.startsWith('http') ? url :
+                    `https://kemono.cr${url}`;
+
+    // Double-check after normalization
+    if (isThumbnailUrl(fullUrl) || addedUrls.has(fullUrl)) {
+      return false;
+    }
+
+    addedUrls.add(fullUrl);
+    mediaFiles.push({ url: fullUrl, mediaType, type: 'html' });
+    return true;
+  }
+
+  // Priority 1: Extract full-size images from <a> tags wrapping images
+  // These are the main image links (inlineThumb, fileThumb, image-link classes)
+  $('a.inlineThumb, a.fileThumb, a.image-link').each((index, element) => {
+    const href = $(element).attr('href');
+    if (href && isDownloadableUrl(href)) {
+      const isVideo = isVideoUrl(href);
+      const mediaType = isVideo ? 'video' : 'image';
+      addMediaFile(href, mediaType);
     }
   });
 
-  // Find videos in post content
+  // Priority 2: Extract from img tags in document order
+  // For each img, try data-src first (may have full URL), then src
+  $('.post__content img, .post__thumbnail img').each((index, element) => {
+    // Try data-src first (may contain full-size URL)
+    const dataSrc = $(element).attr('data-src');
+    if (dataSrc && !isThumbnailUrl(dataSrc)) {
+      addMediaFile(dataSrc, 'image');
+      return; // Skip src if data-src was added
+    }
+
+    // Fallback to src attribute (skip if it's a thumbnail)
+    const imgSrc = $(element).attr('src');
+    if (imgSrc && !isThumbnailUrl(imgSrc)) {
+      addMediaFile(imgSrc, 'image');
+    }
+  });
+
+  // Priority 4: Find videos in post content
   $('.post__content video, .post__attachment video').each((index, element) => {
     const videoSrc = $(element).attr('src') || $(element).find('source').attr('src');
     if (videoSrc) {
-      const videoUrl = videoSrc.startsWith('http') ? videoSrc : `https://kemono.cr${videoSrc}`;
-      mediaFiles.push({ url: videoUrl, mediaType: 'video', type: 'html' });
+      addMediaFile(videoSrc, 'video');
     }
   });
 
-  // Find file attachments (including archives)
+  // Priority 5: Find file attachments (including archives)
   $('.post__attachment a').each((index, element) => {
     const attachmentUrl = $(element).attr('href');
     if (attachmentUrl && isDownloadableUrl(attachmentUrl)) {
-      const fullUrl = attachmentUrl.startsWith('http') ? attachmentUrl : `https://kemono.cr${attachmentUrl}`;
-      const isVideo = isVideoUrl(fullUrl);
-      const isArchive = isArchiveUrl(fullUrl);
+      const isVideo = isVideoUrl(attachmentUrl);
+      const isArchive = isArchiveUrl(attachmentUrl);
       let mediaType = 'image';
-      
+
       if (isVideo) {
         mediaType = 'video';
       } else if (isArchive) {
         mediaType = 'archive';
       }
-      
-      mediaFiles.push({ url: fullUrl, mediaType, type: 'html' });
+
+      addMediaFile(attachmentUrl, mediaType);
     }
   });
-  
+
   return mediaFiles;
 }
 

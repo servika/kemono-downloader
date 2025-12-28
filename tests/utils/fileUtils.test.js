@@ -310,6 +310,152 @@ describe('fileUtils', () => {
       expect(axios).toHaveBeenCalledTimes(2);
       expect(delay).toHaveBeenCalledWith(1000);
     });
+
+    test('should try thumbnail URL when full resolution returns 404', async () => {
+      const mockStream = Readable.from([Buffer.from('thumbnail data')]);
+
+      const notFoundError = new Error('Not found');
+      notFoundError.response = { status: 404 };
+
+      axios
+        .mockRejectedValueOnce(notFoundError)
+        .mockResolvedValueOnce({
+          data: mockStream,
+          headers: { 'content-length': '10' }
+        });
+
+      const mockWriter = new PassThrough();
+      jest.spyOn(mockWriter, 'destroy');
+
+      fs.createWriteStream.mockReturnValue(mockWriter);
+      fs.ensureDir.mockResolvedValue();
+
+      const onProgress = jest.fn();
+
+      await downloadImageWithRetry(
+        'https://example.com/data/image.jpg',
+        '/test/image.jpg',
+        onProgress,
+        'https://example.com/thumbnail/image.jpg'
+      );
+
+      expect(axios).toHaveBeenCalledTimes(2);
+      expect(axios).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        url: 'https://example.com/data/image.jpg'
+      }));
+      expect(axios).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        url: 'https://example.com/thumbnail/image.jpg'
+      }));
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('trying thumbnail'));
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Downloaded thumbnail'));
+    });
+
+    test('should not try thumbnail if full resolution succeeds', async () => {
+      const mockStream = Readable.from([Buffer.from('full res data')]);
+
+      axios.mockResolvedValueOnce({
+        data: mockStream,
+        headers: { 'content-length': '10' }
+      });
+
+      const mockWriter = new PassThrough();
+      jest.spyOn(mockWriter, 'destroy');
+
+      fs.createWriteStream.mockReturnValue(mockWriter);
+      fs.ensureDir.mockResolvedValue();
+
+      await downloadImageWithRetry(
+        'https://example.com/data/image.jpg',
+        '/test/image.jpg',
+        null,
+        'https://example.com/thumbnail/image.jpg'
+      );
+
+      expect(axios).toHaveBeenCalledTimes(1);
+      expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+        url: 'https://example.com/data/image.jpg'
+      }));
+    });
+
+    test('should fail if both full resolution and thumbnail fail', async () => {
+      const notFoundError = new Error('Not found');
+      notFoundError.response = { status: 404 };
+
+      axios.mockRejectedValue(notFoundError);
+
+      const onProgress = jest.fn();
+
+      await expect(
+        downloadImageWithRetry(
+          'https://example.com/data/image.jpg',
+          '/test/image.jpg',
+          onProgress,
+          'https://example.com/thumbnail/image.jpg'
+        )
+      ).rejects.toThrow('Not found');
+
+      expect(axios).toHaveBeenCalledTimes(2);
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('trying thumbnail'));
+    });
+
+    test('should not try thumbnail for non-404 errors', async () => {
+      const serverError = new Error('Server error');
+      serverError.response = { status: 500 };
+
+      axios.mockRejectedValue(serverError);
+
+      await expect(
+        downloadImageWithRetry(
+          'https://example.com/data/image.jpg',
+          '/test/image.jpg',
+          null,
+          'https://example.com/thumbnail/image.jpg'
+        )
+      ).rejects.toThrow('Server error');
+
+      // Should retry 3 times on 500 error, but not try thumbnail
+      expect(axios).toHaveBeenCalledTimes(3);
+      // All calls should be to the full resolution URL
+      expect(axios).toHaveBeenCalledWith(expect.objectContaining({
+        url: 'https://example.com/data/image.jpg'
+      }));
+    });
+
+    test('should not try thumbnail if thumbnailUrl is null', async () => {
+      const notFoundError = new Error('Not found');
+      notFoundError.response = { status: 404 };
+
+      axios.mockRejectedValue(notFoundError);
+
+      await expect(
+        downloadImageWithRetry(
+          'https://example.com/data/image.jpg',
+          '/test/image.jpg',
+          null,
+          null
+        )
+      ).rejects.toThrow('Not found');
+
+      expect(axios).toHaveBeenCalledTimes(1);
+    });
+
+    test('should not try thumbnail if thumbnailUrl is same as imageUrl', async () => {
+      const notFoundError = new Error('Not found');
+      notFoundError.response = { status: 404 };
+
+      axios.mockRejectedValue(notFoundError);
+
+      await expect(
+        downloadImageWithRetry(
+          'https://example.com/data/image.jpg',
+          '/test/image.jpg',
+          null,
+          'https://example.com/data/image.jpg'
+        )
+      ).rejects.toThrow('Not found');
+
+      expect(axios).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('downloadMedia and downloadMediaWithRetry', () => {

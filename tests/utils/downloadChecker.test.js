@@ -296,7 +296,7 @@ describe('downloadChecker', () => {
 
       fs.pathExists.mockResolvedValue(true);
       fs.stat.mockResolvedValue({ size: 1024 });
-      
+
       const mockFile = {
         read: jest.fn(),
         close: jest.fn().mockResolvedValue()
@@ -328,6 +328,80 @@ describe('downloadChecker', () => {
 
       expect(result.allPresent).toBe(true);
       expect(result.presentCount).toBe(3);
+    });
+
+    test('should validate video file formats', async () => {
+      const mockImages = [
+        { url: 'https://example.com/video1.mp4' },
+        { url: 'https://example.com/video2.webm' }
+      ];
+
+      fs.pathExists.mockResolvedValue(true);
+      fs.stat.mockResolvedValue({ size: 1024 });
+
+      const mockFile = {
+        read: jest.fn(),
+        close: jest.fn().mockResolvedValue()
+      };
+      nodeFs.promises.open.mockResolvedValue(mockFile);
+
+      getImageName
+        .mockReturnValueOnce('video1.mp4')
+        .mockReturnValueOnce('video2.webm');
+
+      mockFile.read.mockImplementation((buffer) => {
+        const callCount = mockFile.read.mock.calls.length;
+        if (callCount === 1) {
+          // MP4 signature (ftyp at offset 4)
+          buffer.write('ftyp', 4, 'ascii');
+        } else {
+          // WebM signature (EBML header)
+          buffer.set([0x1A, 0x45, 0xDF, 0xA3]);
+        }
+        return Promise.resolve({ bytesRead: 16 });
+      });
+
+      const result = await verifyAllImagesDownloaded('/test/post', mockImages);
+
+      expect(result.allPresent).toBe(true);
+      expect(result.presentCount).toBe(2);
+    });
+
+    test('should handle mixed image and video files', async () => {
+      const mockImages = [
+        { url: 'https://example.com/image.jpg' },
+        { url: 'https://example.com/video.mp4' }
+      ];
+
+      fs.pathExists.mockResolvedValue(true);
+      fs.stat.mockResolvedValue({ size: 1024 });
+
+      const mockFile = {
+        read: jest.fn(),
+        close: jest.fn().mockResolvedValue()
+      };
+      nodeFs.promises.open.mockResolvedValue(mockFile);
+
+      getImageName
+        .mockReturnValueOnce('image.jpg')
+        .mockReturnValueOnce('video.mp4');
+
+      mockFile.read.mockImplementation((buffer) => {
+        const callCount = mockFile.read.mock.calls.length;
+        if (callCount === 1) {
+          // JPEG signature
+          buffer.set([0xFF, 0xD8, 0xFF, 0xE0]);
+        } else {
+          // MP4 signature
+          buffer.write('ftyp', 4, 'ascii');
+        }
+        return Promise.resolve({ bytesRead: 16 });
+      });
+
+      const result = await verifyAllImagesDownloaded('/test/post', mockImages);
+
+      expect(result.allPresent).toBe(true);
+      expect(result.presentCount).toBe(2);
     });
   });
 

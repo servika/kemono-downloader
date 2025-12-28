@@ -424,6 +424,68 @@ describe('imageExtractor', () => {
         type: 'html'
       });
     });
+
+    test('should extract full-size images from inlineThumb links, not thumbnails', () => {
+      // Real-world scenario from kemono.cr
+      const html = `
+        <div class="post__content">
+          <a href="https://n1.kemono.cr/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg" class="inlineThumb">
+            <img src="//img.kemono.cr/thumbnail/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg"
+                 data-src="https://n1.kemono.cr/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg">
+          </a>
+          <a href="https://n1.kemono.cr/data/be/3a/be3a7a653d77afb9d60330f1f09518e6751beb7a0b45e0658035f62e45d37401.jpg" class="inlineThumb">
+            <img src="//img.kemono.cr/thumbnail/data/be/3a/be3a7a653d77afb9d60330f1f09518e6751beb7a0b45e0658035f62e45d37401.jpg"
+                 data-src="https://n1.kemono.cr/data/be/3a/be3a7a653d77afb9d60330f1f09518e6751beb7a0b45e0658035f62e45d37401.jpg">
+          </a>
+        </div>
+      `;
+      const $ = cheerio.load(html);
+
+      const result = extractMediaFromHTML($);
+
+      // Should extract full-size images from href, not thumbnails from img src
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({
+        url: 'https://n1.kemono.cr/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg',
+        mediaType: 'image',
+        type: 'html'
+      });
+      expect(result[1]).toEqual({
+        url: 'https://n1.kemono.cr/data/be/3a/be3a7a653d77afb9d60330f1f09518e6751beb7a0b45e0658035f62e45d37401.jpg',
+        mediaType: 'image',
+        type: 'html'
+      });
+
+      // Verify no thumbnail URLs were extracted
+      result.forEach(item => {
+        expect(item.url).not.toContain('/thumbnail/');
+        expect(item.url).not.toContain('img.kemono.cr/thumbnail');
+      });
+    });
+
+    test('should extract full-size images from fileThumb links', () => {
+      const html = `
+        <div class="post__files">
+          <div class="post__thumbnail">
+            <a class="fileThumb image-link" href="https://n1.kemono.cr/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg?f=test.jpg" download="test.jpg">
+              <img data-src="//img.kemono.cr/thumbnail/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg" loading="lazy"
+                   src="//img.kemono.cr/thumbnail/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg">
+            </a>
+          </div>
+        </div>
+      `;
+      const $ = cheerio.load(html);
+
+      const result = extractMediaFromHTML($);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        url: 'https://n1.kemono.cr/data/47/b1/47b15e9a817a5810c70a91f26616b7743247fef02aab726841e28f20c51989c3.jpg?f=test.jpg',
+        mediaType: 'image',
+        type: 'html'
+      });
+      expect(result[0].url).not.toContain('/thumbnail/');
+    });
   });
 
   describe('backward compatibility', () => {

@@ -184,19 +184,38 @@ function extractMediaFromPostHTML($, postUrl) {
     const $img = $(element);
     const imgSrc = $img.attr('data-src') || $img.attr('src') || $img.attr('data-original');
 
-    if (imgSrc && !imgSrc.includes('/thumbnail/') && !imgSrc.includes('avatar') && !imgSrc.includes('icon')) {
-      // Convert thumbnail URLs to full URLs
+    if (imgSrc && !imgSrc.includes('avatar') && !imgSrc.includes('icon')) {
       let fullUrl = imgSrc;
-      if (imgSrc.includes('/thumbnail/')) {
-        fullUrl = imgSrc.replace('/thumbnail/', '/');
+      let thumbnailUrl = null;
+
+      // Check if this is a thumbnail URL
+      const isThumbnail = fullUrl.includes('/thumbnail/') || fullUrl.includes('_thumb.') || fullUrl.includes('.thumb.');
+
+      if (isThumbnail) {
+        // Keep original thumbnail as fallback
+        thumbnailUrl = fullUrl.startsWith('http') ? fullUrl : (fullUrl.startsWith('//') ? `https:${fullUrl}` : `${baseUrl}${fullUrl}`);
+
+        // Convert to full resolution URL
+        if (fullUrl.includes('/thumbnail/')) {
+          fullUrl = fullUrl.replace('/thumbnail/', '/data/');
+        }
+        if (fullUrl.includes('_thumb.')) {
+          fullUrl = fullUrl.replace('_thumb.', '.');
+        }
+        if (fullUrl.includes('.thumb.')) {
+          fullUrl = fullUrl.replace('.thumb.', '.');
+        }
       }
 
       fullUrl = fullUrl.startsWith('http') ? fullUrl : (fullUrl.startsWith('//') ? `https:${fullUrl}` : `${baseUrl}${fullUrl}`);
 
-      // Avoid duplicates
-      if (!mediaFiles.some(m => m.url === fullUrl)) {
+      // Avoid duplicates - check both full and thumbnail URLs
+      const isDuplicate = mediaFiles.some(m => m.url === fullUrl || m.thumbnailUrl === fullUrl);
+
+      if (!isDuplicate) {
         mediaFiles.push({
           url: fullUrl,
+          thumbnailUrl: thumbnailUrl, // Keep thumbnail as fallback
           filename: $img.attr('alt') || null,
           type: 'image',
           mediaType: 'image',

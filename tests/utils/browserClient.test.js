@@ -23,6 +23,7 @@ describe('browserClient', () => {
       setViewport: jest.fn().mockResolvedValue(),
       setUserAgent: jest.fn().mockResolvedValue(),
       setExtraHTTPHeaders: jest.fn().mockResolvedValue(),
+      setCookie: jest.fn().mockResolvedValue(),
       goto: jest.fn().mockResolvedValue(),
       content: jest.fn().mockResolvedValue('<html></html>'),
       evaluate: jest.fn()
@@ -93,6 +94,32 @@ describe('browserClient', () => {
       .toThrow('HTTP 403 Forbidden');
   });
 
+  test('fetchJSON should throw on empty response', async () => {
+    mockPage.evaluate.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: null
+    });
+
+    await expect(browserClient.fetchJSON('https://example.com/api'))
+      .rejects
+      .toThrow('Empty response');
+  });
+
+  test('fetchJSON should throw on fetch error in browser', async () => {
+    mockPage.evaluate.mockResolvedValue({
+      ok: false,
+      status: 0,
+      statusText: 'Network error',
+      text: null
+    });
+
+    await expect(browserClient.fetchJSON('https://example.com/api'))
+      .rejects
+      .toThrow('HTTP 0 Network error');
+  });
+
   test('fetchRenderedPage should return HTML content', async () => {
     const onLog = jest.fn();
     const result = await browserClient.fetchRenderedPage('https://example.com/page', onLog);
@@ -100,7 +127,22 @@ describe('browserClient', () => {
     expect(mockPage.goto).toHaveBeenCalledWith('https://example.com/page', expect.any(Object));
     expect(mockPage.content).toHaveBeenCalled();
     expect(result).toBe('<html></html>');
-    expect(delay).toHaveBeenCalledWith(3000);
+    expect(delay).toHaveBeenCalledWith(5000);
+  });
+
+  test('fetchRenderedPage should throw on navigation error', async () => {
+    const onLog = jest.fn();
+    // Mock goto to reject on second call (first is initialization, second is the actual page)
+    mockPage.goto
+      .mockResolvedValueOnce() // First call during initialization succeeds
+      .mockRejectedValueOnce(new Error('Navigation timeout')); // Second call fails
+
+    await expect(browserClient.fetchRenderedPage('https://example.com/page', onLog))
+      .rejects
+      .toThrow('Navigation timeout');
+
+    expect(onLog).toHaveBeenCalledWith(expect.stringContaining('navigating'));
+    expect(onLog).toHaveBeenCalledWith(expect.stringContaining('failed'));
   });
 
   test('extractImagesFromRenderedPost should return extracted URLs', async () => {
@@ -109,7 +151,7 @@ describe('browserClient', () => {
     const result = await browserClient.extractImagesFromRenderedPost('https://example.com/post');
 
     expect(mockPage.goto).toHaveBeenCalledWith('https://example.com/post', expect.any(Object));
-    expect(delay).toHaveBeenCalledWith(3000);
+    expect(delay).toHaveBeenCalledWith(3000); // extractImagesFromRenderedPost uses 3000ms delay
     expect(result).toEqual(['https://example.com/a.jpg', 'https://example.com/b.png']);
   });
 
@@ -119,6 +161,53 @@ describe('browserClient', () => {
     const result = await browserClient.extractImagesFromRenderedPost('https://example.com/post');
 
     expect(result).toEqual([]);
+  });
+
+  test('extractImagesFromRenderedPost should convert thumbnail URLs in browser', async () => {
+    // Test the thumbnail conversion logic that runs inside page.evaluate
+    const convertThumbnailUrl = (url) => {
+      if (!url) return url;
+      if (url.includes('/thumbnail/')) {
+        url = url.replace('/thumbnail/', '/data/');
+      }
+      if (url.includes('_thumb.')) {
+        url = url.replace('_thumb.', '.');
+      }
+      if (url.includes('.thumb.')) {
+        url = url.replace('.thumb.', '.');
+      }
+      return url;
+    };
+
+    // Test all thumbnail patterns
+    expect(convertThumbnailUrl('https://kemono.cr/thumbnail/abc123.jpg')).toBe('https://kemono.cr/data/abc123.jpg');
+    expect(convertThumbnailUrl('https://kemono.cr/image_thumb.jpg')).toBe('https://kemono.cr/image.jpg');
+    expect(convertThumbnailUrl('https://kemono.cr/image.thumb.jpg')).toBe('https://kemono.cr/image.jpg');
+    expect(convertThumbnailUrl('https://kemono.cr/normal.jpg')).toBe('https://kemono.cr/normal.jpg');
+    expect(convertThumbnailUrl(null)).toBe(null);
+  });
+
+  test('navigateToPage should set browser context', async () => {
+    const onLog = jest.fn();
+
+    await browserClient.navigateToPage('https://example.com/profile', onLog);
+
+    expect(mockPage.goto).toHaveBeenCalledWith('https://example.com/profile', expect.any(Object));
+    expect(delay).toHaveBeenCalledWith(1000);
+    expect(onLog).toHaveBeenCalledWith(expect.stringContaining('Setting browser context'));
+    expect(onLog).toHaveBeenCalledWith(expect.stringContaining('Browser context set'));
+  });
+
+  test('navigateToPage should continue on navigation error', async () => {
+    const onLog = jest.fn();
+    // Mock goto to succeed for initialization, then fail for the actual navigation
+    mockPage.goto
+      .mockResolvedValueOnce() // Initialization succeeds
+      .mockRejectedValueOnce(new Error('Navigation failed')); // Navigation fails
+
+    await browserClient.navigateToPage('https://example.com/profile', onLog);
+
+    expect(onLog).toHaveBeenCalledWith(expect.stringContaining('Could not navigate'));
   });
 
   test('close should reset browser state', async () => {

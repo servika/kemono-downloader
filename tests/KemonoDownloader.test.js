@@ -22,19 +22,23 @@ jest.mock('fs-extra');
 jest.mock('cheerio');
 
 // Helper function to create cheerio mock with consistent structure
-function createCheerioMock(bodyContent = 'normal html') {
+function createCheerioMock(bodyContent = 'normal html', fullHtml = '<html><body>normal html</body></html>') {
   const elementMock = {
     text: jest.fn().mockReturnValue(bodyContent),
     find: jest.fn().mockReturnThis(),
     first: jest.fn().mockReturnThis(),
     attr: jest.fn(),
     is: jest.fn().mockReturnValue(false),
-    each: jest.fn()
+    each: jest.fn(),
+    html: jest.fn().mockReturnValue(fullHtml)
   };
 
   const $ = jest.fn((selector) => {
     if (selector === 'body') {
-      return { text: jest.fn().mockReturnValue(bodyContent) };
+      return {
+        text: jest.fn().mockReturnValue(bodyContent),
+        html: jest.fn().mockReturnValue(fullHtml)
+      };
     }
     return elementMock;
   });
@@ -46,6 +50,7 @@ function createCheerioMock(bodyContent = 'normal html') {
   $.attr = elementMock.attr;
   $.is = elementMock.is;
   $.each = elementMock.each;
+  $.html = elementMock.html;
 
   return $;
 }
@@ -155,48 +160,47 @@ describe('KemonoDownloader', () => {
     test('should extract posts from HTML', async () => {
       const profileUrl = 'https://kemono.cr/patreon/user/123';
       const mockHtml = '<html><body><article class="post-card"><a href="/patreon/user/123/post/456">Post</a></article></body></html>';
-      
-      const mockCheerio = {
-        load: jest.fn(),
-        '': jest.fn()
+
+      // Create chainable mock that supports .find().text()
+      const textMock = jest.fn().mockReturnValue('Test Post Title');
+      const findResultMock = {
+        text: textMock,
+        first: jest.fn().mockReturnThis(),
+        attr: jest.fn().mockReturnValue('/patreon/user/123/post/456'),
+        trim: jest.fn().mockReturnValue('Test Post Title')
       };
-      
+
       const mock$ = jest.fn().mockReturnValue({
         text: jest.fn().mockReturnValue('normal html content'),
         length: 1,
         each: jest.fn().mockImplementation((callback) => {
-          callback(0, { tagName: 'a' });
+          callback(0, { tagName: 'article' });
         }),
-        find: jest.fn().mockReturnValue({
-          first: jest.fn().mockReturnValue({
-            attr: jest.fn().mockReturnValue('/patreon/user/123/post/456')
-          }),
-          attr: jest.fn().mockReturnValue('/patreon/user/123/post/456')
-        }),
+        find: jest.fn().mockReturnValue(findResultMock),
         is: jest.fn().mockReturnValue(false),
         attr: jest.fn().mockReturnValue('/patreon/user/123/post/456')
       });
-      
-      mock$.text = jest.fn().mockReturnValue('TestUser');
+
+      mock$.text = jest.fn().mockReturnValue('normal html content');
       mock$.first = jest.fn().mockReturnValue(mock$);
-      mock$.trim = jest.fn().mockReturnValue('TestUser');
+      mock$.trim = jest.fn().mockReturnValue('Test Post Title');
       mock$.attr = jest.fn().mockReturnValue('/patreon/user/123/post/456');
-      mock$.find = jest.fn().mockReturnValue(mock$);
+      mock$.find = jest.fn().mockReturnValue(findResultMock);
       mock$.is = jest.fn().mockReturnValue(false);
       mock$.substring = jest.fn().mockReturnValue('normal html content');
       mock$.length = 1;
       mock$.each = jest.fn().mockImplementation((callback) => {
-        callback(0, { tagName: 'a' });
+        callback(0, { tagName: 'article' });
       });
-      
+
       cheerio.load.mockReturnValue(mock$);
       fetchPage.mockResolvedValue(mockHtml);
       extractUserInfo.mockReturnValue({ userId: '123', service: 'patreon' });
-      
+
       downloader.extractPostId = jest.fn().mockReturnValue('456');
-      
+
       const result = await downloader.getProfilePostsFromHTML(profileUrl);
-      
+
       expect(fetchPage).toHaveBeenCalledWith(profileUrl, expect.any(Function));
       expect(result.length).toBeGreaterThan(0);
     });

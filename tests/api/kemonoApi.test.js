@@ -53,21 +53,22 @@ describe('kemonoApi', () => {
   });
 
   describe('fetchPostsFromAPI', () => {
-    test('should fetch posts and paginate', async () => {
+    test('should fetch posts from API (no pagination support)', async () => {
       const mockProfileData = { name: 'Test/User' };
       const mockPostsData = [
         { id: '123', title: 'Post 1' },
         { id: '456' }
       ];
 
+      browserClient.navigateToPage.mockResolvedValueOnce();
       browserClient.fetchJSON
         .mockResolvedValueOnce({ data: mockProfileData })
-        .mockResolvedValueOnce({ data: mockPostsData })
-        .mockResolvedValueOnce({ data: [] });
+        .mockResolvedValueOnce({ data: mockPostsData });
 
       const result = await fetchPostsFromAPI('patreon', '12345');
 
-      expect(browserClient.fetchJSON).toHaveBeenCalledTimes(3);
+      expect(browserClient.navigateToPage).toHaveBeenCalledTimes(1);
+      expect(browserClient.fetchJSON).toHaveBeenCalledTimes(2); // Profile + posts, no pagination
       expect(result).toEqual([
         {
           url: 'https://kemono.cr/patreon/user/12345/post/123',
@@ -82,7 +83,6 @@ describe('kemonoApi', () => {
           title: 'Untitled'
         }
       ]);
-      expect(delay).toHaveBeenCalledWith(0);
     });
 
     test('should handle response with nested posts array', async () => {
@@ -92,11 +92,11 @@ describe('kemonoApi', () => {
         ]
       };
 
+      browserClient.navigateToPage.mockResolvedValueOnce();
       browserClient.fetchJSON
         .mockRejectedValueOnce(new Error('Profile not found'))
         .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockResolvedValueOnce({ data: mockResponse })
-        .mockResolvedValueOnce({ data: [] });
+        .mockResolvedValueOnce({ data: mockResponse });
 
       const result = await fetchPostsFromAPI('patreon', '99999');
 
@@ -112,11 +112,11 @@ describe('kemonoApi', () => {
         ]
       };
 
+      browserClient.navigateToPage.mockResolvedValueOnce();
       browserClient.fetchJSON
         .mockRejectedValueOnce(new Error('Profile not found'))
         .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockResolvedValueOnce({ data: mockResponse })
-        .mockResolvedValueOnce({ data: [] });
+        .mockResolvedValueOnce({ data: mockResponse });
 
       const result = await fetchPostsFromAPI('fanbox', '88888');
 
@@ -128,86 +128,18 @@ describe('kemonoApi', () => {
       const mockOnLog = jest.fn();
       const mockGoodResponse = [{ id: '333', title: 'Good Post' }];
 
+      browserClient.navigateToPage.mockResolvedValueOnce();
       browserClient.fetchJSON
         .mockRejectedValueOnce(new Error('Profile not found'))
         .mockRejectedValueOnce(new Error('Profile not found'))
         .mockResolvedValueOnce({ data: { unexpected: 'format' } }) // Bad format
-        .mockResolvedValueOnce({ data: mockGoodResponse }) // Good format
-        .mockResolvedValueOnce({ data: [] });
+        .mockResolvedValueOnce({ data: mockGoodResponse }); // Good format
 
       const result = await fetchPostsFromAPI('patreon', '77777', mockOnLog);
 
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('333');
       expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Unexpected response format'));
-    });
-
-    test('should handle pagination with multiple pages', async () => {
-      const mockOnLog = jest.fn();
-      const page1 = [
-        { id: '1', title: 'Post 1' },
-        { id: '2', title: 'Post 2' }
-      ];
-      const page2 = [
-        { id: '3', title: 'Post 3' },
-        { id: '4', title: 'Post 4' }
-      ];
-
-      browserClient.fetchJSON
-        .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockResolvedValueOnce({ data: page1 })
-        .mockResolvedValueOnce({ data: page2 })
-        .mockResolvedValueOnce({ data: [] });
-
-      const result = await fetchPostsFromAPI('patreon', '55555', mockOnLog);
-
-      expect(result).toHaveLength(4);
-      expect(result.map(p => p.id)).toEqual(['1', '2', '3', '4']);
-      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Fetching page 2'));
-    });
-
-    test('should deduplicate posts across pages', async () => {
-      const page1 = [
-        { id: '1', title: 'Post 1' },
-        { id: '2', title: 'Post 2' }
-      ];
-      const page2 = [
-        { id: '2', title: 'Post 2' }, // Duplicate
-        { id: '3', title: 'Post 3' }
-      ];
-
-      browserClient.fetchJSON
-        .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockResolvedValueOnce({ data: page1 })
-        .mockResolvedValueOnce({ data: page2 })
-        .mockResolvedValueOnce({ data: [] });
-
-      const result = await fetchPostsFromAPI('patreon', '44444');
-
-      expect(result).toHaveLength(3);
-      expect(result.map(p => p.id)).toEqual(['1', '2', '3']);
-    });
-
-    test('should handle errors during pagination gracefully', async () => {
-      const mockOnLog = jest.fn();
-      const page1 = [{ id: '1', title: 'Post 1' }];
-
-      browserClient.fetchJSON
-        .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockRejectedValueOnce(new Error('Profile not found'))
-        .mockResolvedValueOnce({ data: page1 })
-        .mockRejectedValueOnce(new Error('Server error'))
-        .mockRejectedValueOnce(new Error('Server error'))
-        .mockRejectedValueOnce(new Error('Server error'))
-        .mockRejectedValueOnce(new Error('Server error'))
-        .mockRejectedValueOnce(new Error('Server error'));
-
-      const result = await fetchPostsFromAPI('patreon', '33333', mockOnLog);
-
-      expect(result).toHaveLength(1);
-      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('No working pagination format found'));
     });
 
     test('should fallback to userId when profile lookup fails', async () => {
@@ -217,11 +149,11 @@ describe('kemonoApi', () => {
         ]
       };
 
+      browserClient.navigateToPage.mockResolvedValueOnce();
       browserClient.fetchJSON
         .mockRejectedValueOnce(new Error('HTTP 404 Not Found'))
         .mockRejectedValueOnce(new Error('HTTP 404 Not Found'))
-        .mockResolvedValueOnce({ data: mockResponse })
-        .mockResolvedValueOnce({ data: [] });
+        .mockResolvedValueOnce({ data: mockResponse });
 
       const result = await fetchPostsFromAPI('fanbox', '67890');
 
@@ -233,6 +165,7 @@ describe('kemonoApi', () => {
     test('should call onLog with progress messages', async () => {
       const mockOnLog = jest.fn();
       config.getRetryAttempts.mockReturnValue(1);
+      browserClient.navigateToPage.mockResolvedValueOnce();
       browserClient.fetchJSON
         .mockRejectedValueOnce(new Error('HTTP 500 Server Error'))
         .mockRejectedValueOnce(new Error('HTTP 500 Server Error'))
@@ -242,6 +175,38 @@ describe('kemonoApi', () => {
       await fetchPostsFromAPI('patreon', '12345', mockOnLog);
 
       expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Fetching profile info'));
+      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Trying API'));
+    });
+
+    test('should handle API errors with retry and logging', async () => {
+      const mockOnLog = jest.fn();
+      const mockPostsData = [{ id: '111', title: 'Test Post' }];
+
+      browserClient.navigateToPage.mockResolvedValueOnce();
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('HTTP 404 Not Found'))
+        .mockRejectedValueOnce(new Error('HTTP 404 Not Found'))
+        .mockRejectedValueOnce(new Error('HTTP 500 Server Error'))
+        .mockResolvedValueOnce({ data: mockPostsData });
+
+      const result = await fetchPostsFromAPI('patreon', '12345', mockOnLog);
+
+      expect(result).toHaveLength(1);
+      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Trying API'));
+    });
+
+    test('should handle empty posts array', async () => {
+      const mockOnLog = jest.fn();
+
+      browserClient.navigateToPage.mockResolvedValueOnce();
+      browserClient.fetchJSON
+        .mockRejectedValueOnce(new Error('HTTP 404 Not Found'))
+        .mockRejectedValueOnce(new Error('HTTP 404 Not Found'))
+        .mockResolvedValueOnce({ data: [] });
+
+      const result = await fetchPostsFromAPI('patreon', '12345', mockOnLog);
+
+      expect(result).toEqual([]);
       expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Trying API'));
     });
   });
