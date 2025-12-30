@@ -10,7 +10,9 @@ A Node.js application for downloading posts and images from kemono.cr profiles w
 - **Thumbnail Upgrade System**: Automatically detects and upgrades small files (<500KB) to full resolution
 - **Thumbnail Fallback**: Downloads full resolution first, falls back to thumbnail on 404 errors
 - **Browser Automation**: Integrated Puppeteer with stealth mode for anti-bot bypass
-- **Mega.nz Download Support**: Automatically detects and downloads files/folders from mega.nz links found in posts
+- **Mega.nz Download Support**: Automatically detects and downloads files/folders from mega.nz links with speed/ETA tracking
+- **Google Drive Download Support**: Automatically detects and downloads public files from Google Drive links
+- **Dropbox Download Support**: Automatically detects and downloads public files from Dropbox share links
 - **Anti-Bot Detection**: Proper HTTP headers (Referer, Origin, Sec-Fetch-*) to bypass protection
 - **Retry Logic**: Automatic retry with exponential backoff (5s → 10s → 20s) for failed downloads
 - **Multiple Data Sources**: Uses API endpoints with comprehensive HTML fallback for maximum compatibility
@@ -130,6 +132,9 @@ download/
 │   │   ├── post.html (if API fails)
 │   │   ├── image1.jpg
 │   │   ├── image2.png
+│   │   ├── mega_downloads/      # Files from mega.nz links
+│   │   ├── google_drive_downloads/  # Files from Google Drive links
+│   │   ├── dropbox_downloads/   # Files from Dropbox links
 │   │   └── ...
 │   └── post_id_2/
 │       └── ...
@@ -208,11 +213,12 @@ For server-friendly downloads:
 - **axios**: HTTP client for API requests and downloads
 - **cheerio**: Server-side jQuery implementation for HTML parsing
 - **fs-extra**: Enhanced file system operations
+- **megajs**: Mega.nz file and folder download client for anonymous downloads
 - **puppeteer-extra**: Browser automation with stealth mode for anti-bot bypass
 - **puppeteer-extra-plugin-stealth**: Stealth plugin to avoid detection
 
 ### Development
-- **jest**: Testing framework with comprehensive test suite (218 tests)
+- **jest**: Testing framework with comprehensive test suite (334 tests)
 - **@jest/globals**: Jest utilities for modern testing
 
 ## License
@@ -233,22 +239,26 @@ Based on code review and analysis, here are prioritized improvements to enhance 
 
 ### High Priority
 
-#### Testing & Quality ✅ Target: 90%+ Coverage (Current: 79.83%)
-- **218 passing tests** across 11 test suites
-- **Good test coverage across most components**:
-  - `concurrentDownloader.js` (98.64% statements) ✅ - Comprehensive tests for semaphore logic, error handling, and concurrency
-  - `fileUtils.js` (95.38% statements) ✅ - Complete coverage of stream handling, retry logic, and file operations
-  - `htmlParser.js` (100% statements) ✅ - Full coverage with 19 comprehensive tests for all parsing strategies
-  - `urlUtils.js` (100% statements) ✅ - Complete URL validation and parsing coverage
+#### Testing & Quality ✅ Target: 90%+ Coverage (Current: 75.01%)
+- **334 passing tests** across 14 test suites
+- **Excellent test coverage for external downloaders**:
+  - `megaDownloader.js` (100% statements, 95.06% branches) ✅ - Full coverage with 45 tests including speed/ETA tracking
+  - `googleDriveDownloader.js` (98.8% statements, 81.13% branches) ✅ - 41 comprehensive tests for Google Drive downloads
+  - `dropboxDownloader.js` (96.9% statements, 90.76% branches) ✅ - 31 comprehensive tests for Dropbox downloads
+- **Good test coverage across core components**:
+  - `concurrentDownloader.js` (96.77% statements) ✅ - Comprehensive tests for semaphore logic, error handling, and concurrency
+  - `urlUtils.js` (100% statements, 98.43% branches) ✅ - Complete URL validation and parsing coverage
   - `config.js` (98.21% statements) ✅ - Configuration management fully tested
   - `delay.js` (100% statements) ✅ - Full coverage
-  - `imageExtractor.js` (89.51% statements) ✅ - Comprehensive media extraction tests
-  - `KemonoDownloader.js` (88.5% statements) ✅ - Integration tests for complete download workflows
+  - `imageExtractor.js` (90% statements) ✅ - Comprehensive media extraction tests
 - **Areas needing improvement**:
-  - `browserClient.js` (64.02% statements) - Browser automation edge cases need more tests
-  - `kemonoApi.js` (49.59% statements) - API edge cases and error scenarios need coverage
-  - `downloadChecker.js` (66.94% statements) - Download verification needs more edge case tests
-- **Overall Project Coverage**: 79.83% statements, 61.36% branches, 80.12% functions, 81.26% lines
+  - `fileUtils.js` (66.35% statements) - File download edge cases need more tests
+  - `downloadChecker.js` (73.72% statements) - Download verification needs more edge case tests
+  - `htmlParser.js` (74.5% statements) - HTML parsing edge cases need coverage
+  - `KemonoDownloader.js` (67.3% statements) - Integration tests need expansion
+  - `browserClient.js` (59.47% statements) - Browser automation edge cases need more tests
+  - `kemonoApi.js` (44.85% statements) - API edge cases and error scenarios need coverage
+- **Overall Project Coverage**: 75.01% statements, 60.22% branches, 76.36% functions, 76.07% lines
 - **Add integration tests** with real API calls using recorded responses
 - **Add E2E tests** for complete download scenarios
 
@@ -358,7 +368,28 @@ Add observability to understand system behavior:
 
 ## Changelog
 
-### Version 1.2.0 (Latest)
+### Version 1.4.0 (Latest)
+- **Dropbox Download Support**: Automatically detects and downloads public files from Dropbox share links
+  - Supports all Dropbox share URL formats (s/, scl/fi/, dropboxusercontent.com)
+  - Automatic dl=0 to dl=1 conversion for direct downloads
+  - Gracefully skips folder URLs with informative messages
+  - 96.9% test coverage with 31 comprehensive tests
+  - Progress tracking and exponential backoff retry logic
+- **Google Drive Download Support**: Automatically detects and downloads public files from Google Drive links
+  - Supports drive.google.com file URLs and Google Docs/Sheets/Slides
+  - Gracefully skips folders (requires API key for folder downloads)
+  - 98.8% test coverage with 41 comprehensive tests
+  - Exponential backoff retry logic and progress tracking
+- **Mega.nz Progress Enhancement**: Added download speed and ETA tracking
+  - Real-time speed calculation (MB/s)
+  - Smart ETA formatting (seconds, minutes, hours)
+  - Enhanced progress display matching modern download managers
+- **Test Suite Expansion**: 334 passing tests across 14 test suites, 75.01% overall coverage
+
+### Version 1.3.0
+- **Google Drive Download Support**: Initial implementation
+
+### Version 1.2.0
 - **Thumbnail Upgrade System**: Automatically detects and upgrades small files (<500KB) to full resolution
 - **Thumbnail Fallback**: Downloads full resolution first, falls back to thumbnail on 404 errors
 - **Browser Automation**: Integrated Puppeteer with stealth mode for anti-bot bypass

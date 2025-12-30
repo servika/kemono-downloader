@@ -146,12 +146,18 @@ describe('browserClient', () => {
   });
 
   test('extractImagesFromRenderedPost should return extracted URLs', async () => {
-    mockPage.evaluate.mockResolvedValue(['https://example.com/a.jpg', 'https://example.com/b.png']);
+    // Mock page.evaluate to return object with urls and debug info (as per actual implementation)
+    mockPage.evaluate.mockResolvedValue({
+      urls: ['https://example.com/a.jpg', 'https://example.com/b.png'],
+      debug: { linksFound: 2, imagesFound: 0, videosFound: 0, urlsCollected: 2 }
+    });
 
     const result = await browserClient.extractImagesFromRenderedPost('https://example.com/post');
 
     expect(mockPage.goto).toHaveBeenCalledWith('https://example.com/post', expect.any(Object));
-    expect(delay).toHaveBeenCalledWith(3000); // extractImagesFromRenderedPost uses 3000ms delay
+    // Delay is called twice: 2000ms during initialize() and 8000ms for rendering
+    expect(delay).toHaveBeenCalledWith(2000); // initialize delay
+    expect(delay).toHaveBeenCalledWith(8000); // extractImagesFromRenderedPost delay (increased from 3s to 8s)
     expect(result).toEqual(['https://example.com/a.jpg', 'https://example.com/b.png']);
   });
 

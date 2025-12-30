@@ -430,6 +430,12 @@ describe('dropboxDownloader', () => {
 
     // Note: Progress tracking test is skipped due to complex timing issues with mocked streams
     // The implementation has progress tracking in place (lines 146-155 in dropboxDownloader.js)
+    // Skipped: This test is flaky due to timing dependencies with stream events and setTimeout.
+    // Progress tracking is already tested in simpler scenarios above (lines 158-159).
+    // To enable this test, the implementation would need to:
+    // 1. Use fake timers (jest.useFakeTimers()) instead of mocking Date.now
+    // 2. Use a more reliable way to flush stream events than setTimeout
+    // 3. Consider using a test helper that waits for specific progress callbacks
     test.skip('should track progress for large files', async () => {
       const mockStream = new stream.PassThrough();
 

@@ -220,11 +220,43 @@ class BrowserClient {
     try {
       if (onLog) onLog(`🌐 Browser rendering post for image extraction: ${url}`);
 
-      // Navigate to the post page
-      await this.page.goto(url, {
-        waitUntil: 'networkidle0',
-        timeout: 45000
-      });
+      // Try progressive navigation strategies for SPAs
+      let navigationSucceeded = false;
+      let strategyUsed = '';
+
+      // Strategy 1: Try networkidle2 (allows up to 2 connections) with 30s timeout
+      try {
+        await this.page.goto(url, {
+          waitUntil: 'networkidle2',
+          timeout: 30000
+        });
+        navigationSucceeded = true;
+        strategyUsed = 'networkidle2';
+      } catch (e1) {
+        if (onLog) onLog(`   ⚠️  networkidle2 timed out, trying 'load' strategy...`);
+
+        // Strategy 2: Fall back to 'load' event (faster, less strict)
+        try {
+          await this.page.goto(url, {
+            waitUntil: 'load',
+            timeout: 20000
+          });
+          navigationSucceeded = true;
+          strategyUsed = 'load';
+        } catch (e2) {
+          if (onLog) onLog(`   ⚠️  'load' failed, trying 'domcontentloaded'...`);
+
+          // Strategy 3: Last resort - just wait for DOM
+          await this.page.goto(url, {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+          });
+          navigationSucceeded = true;
+          strategyUsed = 'domcontentloaded';
+        }
+      }
+
+      if (onLog && navigationSucceeded) onLog(`   ✅ Navigation succeeded using '${strategyUsed}' strategy`);
 
       // Wait longer for JavaScript to render images (increased from 3s to 8s)
       await delay(8000);
