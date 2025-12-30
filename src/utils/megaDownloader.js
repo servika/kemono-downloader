@@ -53,6 +53,25 @@ function formatBytes(bytes) {
 }
 
 /**
+ * Format seconds to human-readable ETA string
+ * @param {number} seconds - Number of seconds
+ * @returns {string} - Formatted string (e.g., "2m 30s")
+ */
+function formatETA(seconds) {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  } else if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return secs > 0 ? `${minutes}m ${secs}s` : `${minutes}m`;
+  } else {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+}
+
+/**
  * Download single mega.nz file
  * @param {string} url - Mega.nz file URL
  * @param {string} destDir - Destination directory
@@ -92,8 +111,10 @@ async function downloadMegaFile(url, destDir, onProgress = () => {}) {
       onProgress(`📥 [MEGA] Downloading: ${filename} (${formatBytes(file.size)})`);
 
       // Download with progress tracking
-      let lastProgressTime = 0;
+      let lastProgressTime = Date.now();
+      let lastBytesDownloaded = 0;
       const progressInterval = 1000; // Update every 1 second
+      const startTime = Date.now();
 
       const downloadResult = await new Promise((resolve, reject) => {
         file.download((error, data) => {
@@ -106,8 +127,21 @@ async function downloadMegaFile(url, destDir, onProgress = () => {}) {
           const now = Date.now();
           if (now - lastProgressTime >= progressInterval) {
             const percentage = Math.round((bytesDownloaded / file.size) * 100);
-            onProgress(`📥 [MEGA] ${filename}: ${percentage}% (${formatBytes(bytesDownloaded)}/${formatBytes(file.size)})`);
+
+            // Calculate download speed
+            const timeDiff = (now - lastProgressTime) / 1000; // seconds
+            const bytesDiff = bytesDownloaded - lastBytesDownloaded;
+            const speedBps = bytesDiff / timeDiff;
+
+            // Calculate ETA
+            const remainingBytes = file.size - bytesDownloaded;
+            const etaSeconds = speedBps > 0 ? Math.round(remainingBytes / speedBps) : 0;
+            const etaFormatted = etaSeconds > 0 ? formatETA(etaSeconds) : 'calculating...';
+
+            onProgress(`📥 [MEGA] ${filename}: ${percentage}% (${formatBytes(bytesDownloaded)}/${formatBytes(file.size)}) • ${formatBytes(speedBps)}/s • ETA: ${etaFormatted}`);
+
             lastProgressTime = now;
+            lastBytesDownloaded = bytesDownloaded;
           }
         });
       });
@@ -245,5 +279,6 @@ module.exports = {
   downloadMegaFile,
   downloadMegaFolder,
   downloadMegaLink,
-  formatBytes
+  formatBytes,
+  formatETA
 };

@@ -3,7 +3,8 @@ const {
   downloadMegaFile,
   downloadMegaFolder,
   downloadMegaLink,
-  formatBytes
+  formatBytes,
+  formatETA
 } = require('../../src/utils/megaDownloader');
 const { File } = require('megajs');
 const fs = require('fs-extra');
@@ -101,6 +102,31 @@ describe('megaDownloader', () => {
 
     test('should format terabytes', () => {
       expect(formatBytes(1099511627776)).toBe('1 TB');
+    });
+  });
+
+  describe('formatETA', () => {
+    test('should format seconds', () => {
+      expect(formatETA(30)).toBe('30s');
+      expect(formatETA(59)).toBe('59s');
+    });
+
+    test('should format minutes and seconds', () => {
+      expect(formatETA(60)).toBe('1m');
+      expect(formatETA(90)).toBe('1m 30s');
+      expect(formatETA(150)).toBe('2m 30s');
+    });
+
+    test('should format hours and minutes', () => {
+      expect(formatETA(3600)).toBe('1h');
+      expect(formatETA(3660)).toBe('1h 1m');
+      expect(formatETA(7200)).toBe('2h');
+      expect(formatETA(7260)).toBe('2h 1m');
+    });
+
+    test('should handle edge cases', () => {
+      expect(formatETA(0)).toBe('0s');
+      expect(formatETA(1)).toBe('1s');
     });
   });
 
@@ -268,13 +294,19 @@ describe('megaDownloader', () => {
     });
 
     test('should show progress for large files', async () => {
+      // Mock Date.now to simulate time passing
+      const originalDateNow = Date.now;
+      let mockTime = 1000000;
+      Date.now = jest.fn(() => mockTime);
+
       const mockFile = {
         name: 'large.zip',
         size: 10485760, // 10MB
         loadAttributes: jest.fn((callback) => callback(null)),
         download: jest.fn((downloadCallback, progressCallback) => {
-          // Simulate progress updates
+          // Simulate progress updates with time passing
           for (let i = 1; i <= 10; i++) {
+            mockTime += 1100; // Advance time by 1.1 seconds to trigger progress update
             progressCallback(null, i * 1048576); // 1MB increments
           }
           downloadCallback(null, Buffer.from('test'));
@@ -289,8 +321,13 @@ describe('megaDownloader', () => {
       const onProgress = jest.fn();
       await downloadMegaFile('https://mega.nz/file/test', '/dest', onProgress);
 
-      // Should show percentage progress
+      // Restore Date.now
+      Date.now = originalDateNow;
+
+      // Should show percentage progress with speed and ETA
       expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('%'));
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('/s'));
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('ETA:'));
     });
 
     test('should handle progress callback errors gracefully', async () => {

@@ -14,6 +14,8 @@ const ConcurrentDownloader = require('./utils/concurrentDownloader');
 const config = require('./utils/config');
 const browserClient = require('./utils/browserClient');
 const { downloadMegaLink, formatBytes } = require('./utils/megaDownloader');
+const { downloadGoogleDriveLink, formatBytes: formatBytesGDrive } = require('./utils/googleDriveDownloader');
+const { downloadDropboxLink, formatBytes: formatBytesDropbox } = require('./utils/dropboxDownloader');
 
 class KemonoDownloader {
   constructor() {
@@ -264,6 +266,65 @@ class KemonoDownloader {
             } catch (error) {
               this.stats.errors++;
               console.log(`  ❌ MEGA download failed: ${error.message}`);
+            }
+          }
+        }
+
+        // Download Google Drive links automatically
+        const googleDriveLinks = externalLinks.filter(link =>
+          link.service === 'drive' || link.service === 'docs'
+        );
+
+        if (googleDriveLinks.length > 0) {
+          console.log(`  🔗 Found ${googleDriveLinks.length} Google Drive link(s) to download`);
+
+          const driveDir = path.join(postDir, 'google_drive_downloads');
+
+          for (const driveLink of googleDriveLinks) {
+            try {
+              const stats = await downloadGoogleDriveLink(
+                driveLink.url,
+                driveDir,
+                (msg) => console.log(`    ${msg}`)
+              );
+
+              this.stats.imagesDownloaded += stats.filesDownloaded;
+              this.stats.errors += stats.filesFailed;
+
+              if (stats.filesDownloaded > 0) {
+                console.log(`  ✅ Google Drive download complete: ${stats.filesDownloaded} files, ${formatBytesGDrive(stats.totalSize)}`);
+              }
+            } catch (error) {
+              this.stats.errors++;
+              console.log(`  ❌ Google Drive download failed: ${error.message}`);
+            }
+          }
+        }
+
+        // Download Dropbox links automatically
+        const dropboxLinks = externalLinks.filter(link => link.service === 'dropbox');
+        if (dropboxLinks.length > 0) {
+          console.log(`  🔗 Found ${dropboxLinks.length} Dropbox link(s) to download`);
+
+          const dropboxDir = path.join(postDir, 'dropbox_downloads');
+
+          for (const dropboxLink of dropboxLinks) {
+            try {
+              const stats = await downloadDropboxLink(
+                dropboxLink.url,
+                dropboxDir,
+                (msg) => console.log(`    ${msg}`)
+              );
+
+              this.stats.imagesDownloaded += stats.filesDownloaded;
+              this.stats.errors += stats.filesFailed;
+
+              if (stats.filesDownloaded > 0) {
+                console.log(`  ✅ Dropbox download complete: ${stats.filesDownloaded} files, ${formatBytesDropbox(stats.totalSize)}`);
+              }
+            } catch (error) {
+              this.stats.errors++;
+              console.log(`  ❌ Dropbox download failed: ${error.message}`);
             }
           }
         }
