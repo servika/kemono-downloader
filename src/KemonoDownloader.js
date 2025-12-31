@@ -16,6 +16,7 @@ const browserClient = require('./utils/browserClient');
 const { downloadMegaLink, formatBytes } = require('./utils/megaDownloader');
 const { downloadGoogleDriveLink, formatBytes: formatBytesGDrive } = require('./utils/googleDriveDownloader');
 const { downloadDropboxLink, formatBytes: formatBytesDropbox } = require('./utils/dropboxDownloader');
+const DownloadState = require('./utils/downloadState');
 
 class KemonoDownloader {
   constructor() {
@@ -34,11 +35,21 @@ class KemonoDownloader {
     await config.load();
     this.baseDir = config.getBaseDirectory();
     this.htmlOnlyMode = config.get('htmlOnlyMode', false);
+    this.downloadState = new DownloadState();
     console.log(`📁 Base directory: ${this.baseDir}`);
     console.log(`⚡ Max concurrent images: ${config.getMaxConcurrentImages()}`);
     console.log(`⏱️  Image delay: ${config.getImageDelay()}ms`);
     if (this.htmlOnlyMode) {
       console.log(`🌐 HTML-only mode: ENABLED (API will be skipped)`);
+    }
+
+    // Show download state statistics
+    const stateStats = this.downloadState.getStatistics();
+    if (stateStats.total > 0) {
+      console.log(`📊 Download state: ${stateStats.completed}/${stateStats.total} profiles completed`);
+      if (config.shouldForceRedownload()) {
+        console.log(`🔄 Force redownload: ENABLED (will ignore completion state)`);
+      }
     }
   }
 
@@ -445,10 +456,25 @@ class KemonoDownloader {
       for (let i = 0; i < profileUrls.length; i++) {
         const profileUrl = profileUrls[i];
         console.log(`\n🔄 [${i + 1}/${profileUrls.length}] Processing profile: ${profileUrl}`);
-        
+
         try {
+          const userInfo = extractUserInfo(profileUrl);
+
+          // Check if profile is already completed (unless force redownload is enabled)
+          if (!config.shouldForceRedownload() && this.downloadState.isProfileCompleted(userInfo.service, userInfo.userId)) {
+            console.log(`  ⏭️  Skipping: Profile already completed (use forceRedownload: true in config.json to override)`);
+            this.stats.profilesProcessed++;
+            continue;
+          }
+
+          // Check for partial download progress
+          const progress = this.downloadState.getProfileProgress(userInfo.service, userInfo.userId);
+          if (progress && !progress.completed) {
+            console.log(`  🔄 Resuming: ${progress.downloadedPosts}/${progress.totalPosts} posts downloaded`);
+          }
+
           const posts = await this.getProfilePosts(profileUrl);
-          
+
           if (posts.length === 0) {
             console.log(`  ⚠️  No posts found for this profile`);
             this.stats.profilesProcessed++;
@@ -456,9 +482,15 @@ class KemonoDownloader {
             continue;
           }
 
+          // Initialize profile state tracking
+          this.downloadState.initializeProfile(userInfo.service, userInfo.userId, posts.length);
+
           for (let j = 0; j < posts.length; j++) {
             await this.downloadPost(posts[j], j, posts.length);
-            
+
+            // Update progress state after each post
+            this.downloadState.updateProgress(userInfo.service, userInfo.userId, j + 1);
+
             // Show progress bar after each post
             const progress = ((j + 1) / posts.length * 100).toFixed(1);
             const completedBars = Math.floor((j + 1) / posts.length * 20);
@@ -466,9 +498,12 @@ class KemonoDownloader {
             const progressBar = '█'.repeat(completedBars) + '░'.repeat(remainingBars);
             console.log(`  📊 Progress: [${progressBar}] ${j + 1}/${posts.length} (${progress}%)`);
           }
-          
+
+          // Mark profile as completed
+          this.downloadState.markCompleted(userInfo.service, userInfo.userId);
+
           this.stats.profilesProcessed++;
-          console.log(`  ✅ Profile completed`);
+          console.log(`  ✅ Profile completed and marked in download state`);
         } catch (error) {
           this.stats.errors++;
           console.error(`  ❌ Error processing profile: ${error.message}`);

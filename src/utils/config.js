@@ -14,7 +14,8 @@ const DEFAULT_CONFIG = {
     delayBetweenAPIRequests: 200,
     delayBetweenPages: 1000,
     retryAttempts: 3,
-    retryDelay: 1000
+    retryDelay: 1000,
+    forceRedownload: false
   },
   api: {
     baseUrl: "https://kemono.cr",
@@ -172,6 +173,10 @@ class Config {
 
   shouldShowDetailedErrors() {
     return this.get('logging.showDetailedErrors') !== false;
+  }
+
+  shouldForceRedownload() {
+    return this.get('download.forceRedownload') === true;
   }
 }
 
