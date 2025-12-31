@@ -174,9 +174,10 @@ class KemonoDownloader {
         }
       }
 
-      // Safety limit: stop after 20 pages (1000 posts)
-      if (pageNum >= 20) {
-        console.log(`  ⚠️  Reached pagination safety limit of 20 pages`);
+      // Safety limit to prevent infinite loops (allow up to 1000 pages = 50,000 posts)
+      if (pageNum >= 1000) {
+        console.log(`  ⚠️  Reached safety limit of 1000 pages (${allPosts.length} posts collected)`);
+        console.log(`  ℹ️  If this is expected, the pagination will stop here to prevent infinite loops`);
         break;
       }
 

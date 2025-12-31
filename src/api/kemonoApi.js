@@ -316,9 +316,10 @@ async function fetchAllPages(baseApiUrl, service, userId, allPosts, onLog, profi
       if (onLog) onLog(`⏰ Waiting ${pageDelay}ms before next page...`);
       await delay(pageDelay);
 
-      // Safety limit to prevent infinite loops
-      if (pageNum > 100) {
-        if (onLog) onLog(`⚠️  Reached safety limit of 100 pages (${allPosts.length} posts collected)`);
+      // Safety limit to prevent infinite loops (allow up to 1000 pages = 50,000 posts)
+      if (pageNum > 1000) {
+        if (onLog) onLog(`⚠️  Reached safety limit of 1000 pages (${allPosts.length} posts collected)`);
+        if (onLog) onLog(`ℹ️  If this is expected, the pagination will stop here to prevent infinite loops`);
         break;
       }
 
@@ -431,9 +432,10 @@ async function fetchPostsFromHTML(service, userId, allPosts, onLog, profileName)
       offset += 50; // Kemono uses 50 posts per page
       pageNum++;
 
-      // Safety limit
-      if (pageNum > 20) {
-        if (onLog) onLog(`⚠️  Reached HTML pagination safety limit of 20 pages`);
+      // Safety limit to prevent infinite loops (allow up to 1000 pages = 50,000 posts)
+      if (pageNum > 1000) {
+        if (onLog) onLog(`⚠️  Reached safety limit of 1000 pages (${totalNewPosts} posts collected)`);
+        if (onLog) onLog(`ℹ️  If this is expected, the pagination will stop here to prevent infinite loops`);
         hasMorePages = false;
       }
 
