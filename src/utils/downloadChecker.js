@@ -2,6 +2,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const { extractImagesFromPostData } = require('../extractors/imageExtractor');
 const { getImageName } = require('./urlUtils');
+const { loadSizeManifest } = require('./fileUtils');
 
 /**
  * Download verification utilities
@@ -46,6 +47,9 @@ async function verifyAllImagesDownloaded(postDir, expectedImages) {
   const corruptedFiles = [];
   let presentCount = 0;
 
+  // Load size manifest for verification
+  const sizeManifest = await loadSizeManifest(postDir);
+
   for (let i = 0; i < expectedImages.length; i++) {
     const imageInfo = expectedImages[i];
     const imageName = getImageName(imageInfo, i);
@@ -63,6 +67,25 @@ async function verifyAllImagesDownloaded(postDir, expectedImages) {
       if (stats.size === 0) {
         corruptedFiles.push({ name: imageName, reason: 'Empty file' });
         continue;
+      }
+
+      // Verify file size against manifest if available
+      if (sizeManifest[imageName]) {
+        const expectedSize = sizeManifest[imageName].expectedSize;
+        if (expectedSize > 0 && stats.size !== expectedSize) {
+          const formatBytes = (bytes) => {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+          };
+          corruptedFiles.push({
+            name: imageName,
+            reason: `Size mismatch: expected ${formatBytes(expectedSize)}, got ${formatBytes(stats.size)}`
+          });
+          continue;
+        }
       }
 
       // Basic file integrity check - read first few bytes to verify it's not corrupted

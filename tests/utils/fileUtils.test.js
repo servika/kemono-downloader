@@ -20,9 +20,42 @@ jest.mock('../../src/utils/config');
 jest.mock('../../src/utils/delay');
 
 describe('fileUtils', () => {
+  // Helper function to create a proper mock stream setup for successful downloads
+  const createSuccessfulDownloadMock = (dataSize = 10, data = null) => {
+    const testData = data || Buffer.from('a'.repeat(dataSize));
+    const mockStream = new PassThrough();
+    const mockWriter = new PassThrough();
+
+    jest.spyOn(mockWriter, 'destroy');
+
+    // Simulate proper data flow through the writer
+    mockWriter.on('pipe', (source) => {
+      source.on('data', (chunk) => {
+        mockWriter.emit('data', chunk);
+      });
+      source.on('end', () => {
+        mockWriter.emit('finish');
+      });
+    });
+
+    const startStream = () => {
+      setImmediate(() => {
+        mockStream.write(testData);
+        mockStream.end();
+      });
+    };
+
+    return {
+      mockStream,
+      mockWriter,
+      testData,
+      startStream
+    };
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     // Mock config defaults
     config.get.mockImplementation((key) => {
       const defaults = {
@@ -31,34 +64,58 @@ describe('fileUtils', () => {
       };
       return defaults[key];
     });
-    
+
     config.getRetryAttempts.mockReturnValue(3);
     config.getRetryDelay.mockReturnValue(1000);
-    
+
     delay.mockResolvedValue();
+
+    // Mock fs.stat for size verification
+    fs.stat.mockResolvedValue({ size: 10 });
+    fs.pathExists.mockResolvedValue(false);
+    fs.remove.mockResolvedValue();
   });
 
   describe('downloadImage', () => {
     test('should download image successfully', async () => {
-      const mockStream = Readable.from([Buffer.from('image data')]);
-      
+      const testData = Buffer.from('image data'); // exactly 10 bytes
+      const mockStream = new PassThrough();
+
       const mockResponse = {
         data: mockStream,
         headers: { 'content-length': '10' }
       };
-      
+
       axios.mockResolvedValue(mockResponse);
-      
+
       const mockWriter = new PassThrough();
       jest.spyOn(mockWriter, 'destroy');
-      
+
+      // Simulate proper data flow through the writer
+      mockWriter.on('pipe', (source) => {
+        source.on('data', (chunk) => {
+          mockWriter.emit('data', chunk);
+        });
+        source.on('end', () => {
+          mockWriter.emit('finish');
+        });
+      });
+
       fs.createWriteStream.mockReturnValue(mockWriter);
       fs.ensureDir.mockResolvedValue();
-      
+
       const onProgress = jest.fn();
-      
-      await downloadImage('https://example.com/image.jpg', '/test/image.jpg', onProgress);
-      
+
+      // Start download and immediately write data to stream
+      const downloadPromise = downloadImage('https://example.com/image.jpg', '/test/image.jpg', onProgress);
+
+      setImmediate(() => {
+        mockStream.write(testData);
+        mockStream.end();
+      });
+
+      await downloadPromise;
+
       expect(axios).toHaveBeenCalledWith({
         method: 'GET',
         url: 'https://example.com/image.jpg',
@@ -68,7 +125,7 @@ describe('fileUtils', () => {
           'User-Agent': 'Mozilla/5.0 (compatible; kemono-downloader)'
         }
       });
-      
+
       expect(fs.ensureDir).toHaveBeenCalledWith('/test');
       expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Downloading: image.jpg'));
       expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Downloaded: image.jpg'));

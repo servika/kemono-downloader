@@ -57,9 +57,23 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
                            error.code === 'ECONNABORTED' ||
                            error.message.includes('timeout') ||
                            error.message.includes('connection lost') ||
-                           error.message.includes('Download interrupted');
+                           error.message.includes('Download interrupted') ||
+                           error.message.includes('Size mismatch') ||
+                           error.message.includes('File size mismatch');
 
         if (shouldRetry) {
+          // Delete incomplete file before retrying
+          if (error.message.includes('Size mismatch') || error.message.includes('File size mismatch')) {
+            try {
+              if (await fs.pathExists(filepath)) {
+                await fs.remove(filepath);
+                if (onProgress) onProgress(`🗑️  Deleted incomplete file: ${path.basename(filepath)}`);
+              }
+            } catch (deleteError) {
+              if (onProgress) onProgress(`⚠️  Failed to delete incomplete file: ${deleteError.message}`);
+            }
+          }
+
           if (onProgress) onProgress(`🔄 Retrying ${path.basename(filepath)} (attempt ${attempt + 1}/${retryAttempts})`);
           await delay(retryDelay);
         } else {
@@ -99,7 +113,7 @@ async function downloadImage(imageUrl, filepath, onProgress) {
     const writer = fs.createWriteStream(filepath);
 
     // Get file size from headers for progress tracking
-    const totalSize = parseInt(response.headers['content-length']) || 0;
+    const expectedSize = parseInt(response.headers['content-length']) || 0;
     let downloadedSize = 0;
     let lastProgressTime = 0;
     const progressInterval = 1000; // Update progress every 1 second
@@ -159,10 +173,10 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       };
 
       const showProgress = () => {
-        if (onProgress && totalSize > 0) {
-          const percentage = Math.round((downloadedSize / totalSize) * 100);
+        if (onProgress && expectedSize > 0) {
+          const percentage = Math.round((downloadedSize / expectedSize) * 100);
           const downloadedFormatted = formatBytes(downloadedSize);
-          const totalFormatted = formatBytes(totalSize);
+          const totalFormatted = formatBytes(expectedSize);
           const filename = path.basename(filepath);
 
           // Show progress for all files with known size
@@ -203,13 +217,42 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       });
 
       // Handle writer events first, before piping
-      writer.on('finish', () => {
-        if (onProgress) onProgress(`✅ Downloaded: ${path.basename(filepath)} (${formatBytes(downloadedSize)})`);
-        // For videos, add a small delay to ensure file is fully written
-        if (isVideo) {
-          setTimeout(() => resolveOnce(), 50);
-        } else {
-          resolveOnce();
+      writer.on('finish', async () => {
+        // Verify file size matches expected size
+        if (expectedSize > 0 && downloadedSize !== expectedSize) {
+          const errorMsg = `Size mismatch: expected ${formatBytes(expectedSize)}, got ${formatBytes(downloadedSize)}`;
+          if (onProgress) onProgress(`⚠️  ${path.basename(filepath)}: ${errorMsg}`);
+          rejectOnce(new Error(errorMsg));
+          return;
+        }
+
+        // Verify actual file size on disk
+        try {
+          const stats = await fs.stat(filepath);
+          if (expectedSize > 0 && stats.size !== expectedSize) {
+            const errorMsg = `File size mismatch: expected ${formatBytes(expectedSize)}, file on disk is ${formatBytes(stats.size)}`;
+            if (onProgress) onProgress(`⚠️  ${path.basename(filepath)}: ${errorMsg}`);
+            rejectOnce(new Error(errorMsg));
+            return;
+          }
+
+          if (onProgress) onProgress(`✅ Downloaded: ${path.basename(filepath)} (${formatBytes(downloadedSize)})`);
+
+          // Return size information for verification
+          const result = {
+            expectedSize,
+            actualSize: downloadedSize,
+            filepath
+          };
+
+          // For videos, add a small delay to ensure file is fully written
+          if (isVideo) {
+            setTimeout(() => resolveOnce(result), 50);
+          } else {
+            resolveOnce(result);
+          }
+        } catch (statError) {
+          rejectOnce(new Error(`Failed to verify file size: ${statError.message}`));
         }
       });
 
@@ -428,6 +471,62 @@ async function readProfilesFile(filename) {
     .filter(line => line && line.startsWith('http'));
 }
 
+/**
+ * Save size manifest for post files
+ * Stores expected file sizes for verification
+ */
+async function saveSizeManifest(postDir, sizeInfo) {
+  const manifestPath = path.join(postDir, 'size-manifest.json');
+
+  // Load existing manifest if present
+  let manifest = {};
+  if (await fs.pathExists(manifestPath)) {
+    try {
+      const content = await fs.readFile(manifestPath, 'utf8');
+      manifest = JSON.parse(content);
+    } catch (error) {
+      // If parsing fails, start fresh
+      manifest = {};
+    }
+  }
+
+  // Update manifest with new size info
+  const filename = path.basename(sizeInfo.filepath);
+  manifest[filename] = {
+    expectedSize: sizeInfo.expectedSize,
+    actualSize: sizeInfo.actualSize,
+    timestamp: new Date().toISOString()
+  };
+
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+/**
+ * Load size manifest for post directory
+ */
+async function loadSizeManifest(postDir) {
+  const manifestPath = path.join(postDir, 'size-manifest.json');
+
+  if (!(await fs.pathExists(manifestPath))) {
+    return {};
+  }
+
+  try {
+    const content = await fs.readFile(manifestPath, 'utf8');
+    return JSON.parse(content);
+  } catch (error) {
+    return {};
+  }
+}
+
+/**
+ * Get expected file size from manifest
+ */
+async function getExpectedSize(postDir, filename) {
+  const manifest = await loadSizeManifest(postDir);
+  return manifest[filename]?.expectedSize || null;
+}
+
 module.exports = {
   downloadImage,
   downloadImageWithRetry,
@@ -435,5 +534,8 @@ module.exports = {
   downloadMediaWithRetry,
   savePostMetadata,
   saveHtmlContent,
-  readProfilesFile
+  readProfilesFile,
+  saveSizeManifest,
+  loadSizeManifest,
+  getExpectedSize
 };
