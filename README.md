@@ -368,7 +368,20 @@ Add observability to understand system behavior:
 
 ## Changelog
 
-### Version 1.4.0 (Latest)
+### Version 1.6.0 (Latest)
+- **Download State Management Tools**: Added utilities to manage and rebuild download state
+  - New `rebuild-state` command to scan existing downloads and create state file
+  - New `check-state` command to view current download state statistics
+  - Automatically marks completed profiles to skip re-verification on subsequent runs
+  - Critical performance improvement for large profile collections (450+ profiles)
+  - Persistent state tracking across Docker container restarts
+  - State file can be mounted as volume for Docker deployments
+- **State Tracking Enhancement**: Improved existing download state tracking with utility scripts
+  - Solves slow startup times caused by re-verifying all previously downloaded posts
+  - Enables quick resume for interrupted downloads
+  - Comprehensive profile completion tracking
+
+### Version 1.4.0
 - **Dropbox Download Support**: Automatically detects and downloads public files from Dropbox share links
   - Supports all Dropbox share URL formats (s/, scl/fi/, dropboxusercontent.com)
   - Automatic dl=0 to dl=1 conversion for direct downloads
