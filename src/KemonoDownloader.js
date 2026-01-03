@@ -5,7 +5,7 @@ const cheerio = require('cheerio');
 const { delay } = require('./utils/delay');
 const { extractUserInfo, extractProfileName } = require('./utils/urlUtils');
 const { getImageName } = require('./utils/urlUtils');
-const { downloadImage, savePostMetadata, saveHtmlContent, readProfilesFile } = require('./utils/fileUtils');
+const { downloadImage, savePostMetadata, saveHtmlContent } = require('./utils/fileUtils');
 const { fetchPage, fetchPostsFromAPI, fetchPostFromAPI } = require('./api/kemonoApi');
 const { extractImagesFromPostData, extractImagesFromHTML } = require('./extractors/imageExtractor');
 const { extractPostsFromProfileHTML, extractMediaFromPostHTML, extractPostMetadataFromHTML, extractUsernameFromProfile, extractExternalLinks } = require('./extractors/htmlParser');
@@ -16,7 +16,7 @@ const browserClient = require('./utils/browserClient');
 const { downloadMegaLink, formatBytes } = require('./utils/megaDownloader');
 const { downloadGoogleDriveLink, formatBytes: formatBytesGDrive } = require('./utils/googleDriveDownloader');
 const { downloadDropboxLink, formatBytes: formatBytesDropbox } = require('./utils/dropboxDownloader');
-const DownloadState = require('./utils/downloadState');
+const ProfileFileManager = require('./utils/profileFileManager');
 
 class KemonoDownloader {
   constructor() {
@@ -35,21 +35,11 @@ class KemonoDownloader {
     await config.load();
     this.baseDir = config.getBaseDirectory();
     this.htmlOnlyMode = config.get('htmlOnlyMode', false);
-    this.downloadState = new DownloadState();
     console.log(`📁 Base directory: ${this.baseDir}`);
     console.log(`⚡ Max concurrent images: ${config.getMaxConcurrentImages()}`);
     console.log(`⏱️  Image delay: ${config.getImageDelay()}ms`);
     if (this.htmlOnlyMode) {
       console.log(`🌐 HTML-only mode: ENABLED (API will be skipped)`);
-    }
-
-    // Show download state statistics
-    const stateStats = this.downloadState.getStatistics();
-    if (stateStats.total > 0) {
-      console.log(`📊 Download state: ${stateStats.completed}/${stateStats.total} profiles completed`);
-      if (config.shouldForceRedownload()) {
-        console.log(`🔄 Force redownload: ENABLED (will ignore completion state)`);
-      }
     }
   }
 
@@ -449,47 +439,42 @@ class KemonoDownloader {
   async processProfilesFile(filename) {
     try {
       console.log(`📂 Reading profiles from: ${filename}`);
-      const profileUrls = await readProfilesFile(filename);
 
-      console.log(`📋 Found ${profileUrls.length} profile URLs to process\n`);
+      // Initialize ProfileFileManager
+      const profileManager = new ProfileFileManager(filename);
+      const profileUrls = await profileManager.readProfiles();
+
+      // Show statistics
+      const stats = await profileManager.getStatistics();
+      console.log(`📋 Found ${stats.active} active profile(s) to process`);
+      if (stats.completed > 0) {
+        console.log(`✅ ${stats.completed} profile(s) already completed (commented out)`);
+      }
+      console.log('');
 
       for (let i = 0; i < profileUrls.length; i++) {
         const profileUrl = profileUrls[i];
         console.log(`\n🔄 [${i + 1}/${profileUrls.length}] Processing profile: ${profileUrl}`);
 
         try {
-          const userInfo = extractUserInfo(profileUrl);
-
-          // Check if profile is already completed (unless force redownload is enabled)
-          if (!config.shouldForceRedownload() && this.downloadState.isProfileCompleted(userInfo.service, userInfo.userId)) {
-            console.log(`  ⏭️  Skipping: Profile already completed (use forceRedownload: true in config.json to override)`);
-            this.stats.profilesProcessed++;
-            continue;
-          }
-
-          // Check for partial download progress
-          const progress = this.downloadState.getProfileProgress(userInfo.service, userInfo.userId);
-          if (progress && !progress.completed) {
-            console.log(`  🔄 Resuming: ${progress.downloadedPosts}/${progress.totalPosts} posts downloaded`);
-          }
-
           const posts = await this.getProfilePosts(profileUrl);
 
           if (posts.length === 0) {
             console.log(`  ⚠️  No posts found for this profile`);
+            // Comment out profile with 0 posts
+            await profileManager.commentProfile(profileUrl, {
+              postCount: 0,
+              timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
+            });
+            console.log(`  💾 Commented out profile in profiles.txt (0 posts)`);
             this.stats.profilesProcessed++;
             console.log(`  ✅ Profile completed`);
             continue;
           }
 
-          // Initialize profile state tracking
-          this.downloadState.initializeProfile(userInfo.service, userInfo.userId, posts.length);
-
+          // Download all posts
           for (let j = 0; j < posts.length; j++) {
             await this.downloadPost(posts[j], j, posts.length);
-
-            // Update progress state after each post
-            this.downloadState.updateProgress(userInfo.service, userInfo.userId, j + 1);
 
             // Show progress bar after each post
             const progress = ((j + 1) / posts.length * 100).toFixed(1);
@@ -499,11 +484,14 @@ class KemonoDownloader {
             console.log(`  📊 Progress: [${progressBar}] ${j + 1}/${posts.length} (${progress}%)`);
           }
 
-          // Mark profile as completed
-          this.downloadState.markCompleted(userInfo.service, userInfo.userId);
+          // Comment out completed profile in profiles.txt
+          await profileManager.commentProfile(profileUrl, {
+            postCount: posts.length,
+            timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
+          });
 
           this.stats.profilesProcessed++;
-          console.log(`  ✅ Profile completed and marked in download state`);
+          console.log(`  ✅ Profile completed and commented out in profiles.txt`);
         } catch (error) {
           this.stats.errors++;
           console.error(`  ❌ Error processing profile: ${error.message}`);
