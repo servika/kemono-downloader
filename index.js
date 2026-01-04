@@ -1,9 +1,16 @@
 const fs = require('fs-extra');
 const KemonoDownloader = require('./src/KemonoDownloader');
+const packageJson = require('./package.json');
 
 // Main execution
 async function main() {
-  console.log('🚀 Starting Kemono Downloader...\n');
+  // Display version banner
+  console.log('='.repeat(50));
+  console.log('🚀 Kemono Downloader');
+  console.log(`📦 Version: ${packageJson.version}`);
+  console.log('='.repeat(50));
+  console.log('');
+
   const downloader = new KemonoDownloader();
 
   // Initialize configuration
