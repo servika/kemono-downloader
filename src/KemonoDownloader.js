@@ -5,7 +5,7 @@ const cheerio = require('cheerio');
 const { delay } = require('./utils/delay');
 const { extractUserInfo, extractProfileName } = require('./utils/urlUtils');
 const { getImageName } = require('./utils/urlUtils');
-const { downloadImage, savePostMetadata, saveHtmlContent } = require('./utils/fileUtils');
+const { downloadImage, savePostMetadata, saveHtmlContent, readProfilesFile } = require('./utils/fileUtils');
 const { fetchPage, fetchPostsFromAPI, fetchPostFromAPI } = require('./api/kemonoApi');
 const { extractImagesFromPostData, extractImagesFromHTML } = require('./extractors/imageExtractor');
 const { extractPostsFromProfileHTML, extractMediaFromPostHTML, extractPostMetadataFromHTML, extractUsernameFromProfile, extractExternalLinks } = require('./extractors/htmlParser');
@@ -16,7 +16,7 @@ const browserClient = require('./utils/browserClient');
 const { downloadMegaLink, formatBytes } = require('./utils/megaDownloader');
 const { downloadGoogleDriveLink, formatBytes: formatBytesGDrive } = require('./utils/googleDriveDownloader');
 const { downloadDropboxLink, formatBytes: formatBytesDropbox } = require('./utils/dropboxDownloader');
-const ProfileFileManager = require('./utils/profileFileManager');
+const ProfileStateManager = require('./utils/profileStateManager');
 
 class KemonoDownloader {
   constructor() {
@@ -439,38 +439,59 @@ class KemonoDownloader {
   async processProfilesFile(filename) {
     try {
       console.log(`📂 Reading profiles from: ${filename}`);
+      const profileUrls = await readProfilesFile(filename);
 
-      // Initialize ProfileFileManager
-      const profileManager = new ProfileFileManager(filename);
-      const profileUrls = await profileManager.readProfiles();
+      // Initialize ProfileStateManager for per-profile state tracking
+      const stateManager = new ProfileStateManager(this.baseDir);
 
-      // Show statistics
-      const stats = await profileManager.getStatistics();
-      console.log(`📋 Found ${stats.active} active profile(s) to process`);
-      if (stats.completed > 0) {
-        console.log(`✅ ${stats.completed} profile(s) already completed (commented out)`);
+      // Show statistics from existing downloads
+      const stats = await stateManager.getStatistics();
+      console.log(`📋 Found ${profileUrls.length} profile URLs to process\n`);
+      if (stats.completedProfiles > 0) {
+        console.log(`✅ ${stats.completedProfiles} profile(s) already completed (found in download folders)`);
+        console.log(`📊 Total: ${stats.totalPosts} posts, ${stats.totalImages} images downloaded\n`);
       }
-      console.log('');
 
       for (let i = 0; i < profileUrls.length; i++) {
         const profileUrl = profileUrls[i];
         console.log(`\n🔄 [${i + 1}/${profileUrls.length}] Processing profile: ${profileUrl}`);
 
         try {
+          const userInfo = extractUserInfo(profileUrl);
           const posts = await this.getProfilePosts(profileUrl);
+
+          // Get username from first post or use fallback
+          const username = posts.length > 0 ? posts[0].username : `${userInfo.service}_${userInfo.userId}`;
+
+          // Check if profile already completed (unless force redownload)
+          if (!config.shouldForceRedownload() && await stateManager.isProfileCompleted(username)) {
+            const state = await stateManager.getProfileState(username);
+            console.log(`  ⏭️  Skipping: Profile already completed`);
+            console.log(`     Completed: ${state.completedAt}`);
+            console.log(`     Downloaded: ${state.totalPosts} posts, ${state.totalImages} images`);
+            this.stats.profilesProcessed++;
+            continue;
+          }
 
           if (posts.length === 0) {
             console.log(`  ⚠️  No posts found for this profile`);
-            // Comment out profile with 0 posts
-            await profileManager.commentProfile(profileUrl, {
-              postCount: 0,
-              timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
+            // Mark as completed with 0 posts
+            await stateManager.markCompleted(username, {
+              profileUrl,
+              service: userInfo.service,
+              userId: userInfo.userId,
+              totalPosts: 0,
+              totalImages: 0,
+              totalErrors: this.stats.errors
             });
-            console.log(`  💾 Commented out profile in profiles.txt (0 posts)`);
             this.stats.profilesProcessed++;
             console.log(`  ✅ Profile completed`);
             continue;
           }
+
+          // Track images for this profile
+          const initialImages = this.stats.imagesDownloaded;
+          const initialErrors = this.stats.errors;
 
           // Download all posts
           for (let j = 0; j < posts.length; j++) {
@@ -484,14 +505,22 @@ class KemonoDownloader {
             console.log(`  📊 Progress: [${progressBar}] ${j + 1}/${posts.length} (${progress}%)`);
           }
 
-          // Comment out completed profile in profiles.txt
-          await profileManager.commentProfile(profileUrl, {
-            postCount: posts.length,
-            timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
+          // Calculate stats for this profile
+          const profileImages = this.stats.imagesDownloaded - initialImages;
+          const profileErrors = this.stats.errors - initialErrors;
+
+          // Mark profile as completed in download folder
+          await stateManager.markCompleted(username, {
+            profileUrl,
+            service: userInfo.service,
+            userId: userInfo.userId,
+            totalPosts: posts.length,
+            totalImages: profileImages,
+            totalErrors: profileErrors
           });
 
           this.stats.profilesProcessed++;
-          console.log(`  ✅ Profile completed and commented out in profiles.txt`);
+          console.log(`  ✅ Profile completed (${posts.length} posts, ${profileImages} images)`);
         } catch (error) {
           this.stats.errors++;
           console.error(`  ❌ Error processing profile: ${error.message}`);
