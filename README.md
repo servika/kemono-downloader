@@ -4,9 +4,10 @@ A Node.js application for downloading posts and images from kemono.cr profiles w
 
 ## Features
 
+- **Per-Profile Download State**: Docker-optimized state management stored in download folders (v1.7.0)
 - **Bulk Profile Processing**: Download from multiple profiles using a simple text file
 - **Concurrent Downloads**: Configurable concurrent image downloads for faster processing
-- **Smart Resume**: Automatically detects and skips already downloaded content
+- **Smart Resume**: Automatically detects and skips already downloaded content and completed profiles
 - **Thumbnail Upgrade System**: Automatically detects and upgrades small files (<500KB) to full resolution
 - **Thumbnail Fallback**: Downloads full resolution first, falls back to thumbnail on 404 errors
 - **Browser Automation**: Integrated Puppeteer with stealth mode for anti-bot bypass
@@ -127,6 +128,7 @@ Downloaded content is organized as follows:
 ```
 download/
 ├── username1/
+│   ├── .download-state.json     # Per-profile completion state (v1.7.0)
 │   ├── post_id_1/
 │   │   ├── post-metadata.json
 │   │   ├── post.html (if API fails)
@@ -139,6 +141,7 @@ download/
 │   └── post_id_2/
 │       └── ...
 └── username2/
+    ├── .download-state.json     # Each profile has its own state file
     └── ...
 ```
 
@@ -218,7 +221,7 @@ For server-friendly downloads:
 - **puppeteer-extra-plugin-stealth**: Stealth plugin to avoid detection
 
 ### Development
-- **jest**: Testing framework with comprehensive test suite (334 tests)
+- **jest**: Testing framework with comprehensive test suite (391 passing tests)
 - **@jest/globals**: Jest utilities for modern testing
 
 ## License
@@ -239,8 +242,8 @@ Based on code review and analysis, here are prioritized improvements to enhance 
 
 ### High Priority
 
-#### Testing & Quality ✅ Target: 90%+ Coverage (Current: 75.01%)
-- **334 passing tests** across 14 test suites
+#### Testing & Quality ✅ Target: 90%+ Coverage (Current: 77.36%)
+- **391 passing tests** across 16 test suites
 - **Excellent test coverage for external downloaders**:
   - `megaDownloader.js` (100% statements, 95.06% branches) ✅ - Full coverage with 45 tests including speed/ETA tracking
   - `googleDriveDownloader.js` (98.8% statements, 81.13% branches) ✅ - 41 comprehensive tests for Google Drive downloads
@@ -258,7 +261,7 @@ Based on code review and analysis, here are prioritized improvements to enhance 
   - `KemonoDownloader.js` (67.3% statements) - Integration tests need expansion
   - `browserClient.js` (59.47% statements) - Browser automation edge cases need more tests
   - `kemonoApi.js` (44.85% statements) - API edge cases and error scenarios need coverage
-- **Overall Project Coverage**: 75.01% statements, 60.22% branches, 76.36% functions, 76.07% lines
+- **Overall Project Coverage**: 77.36% statements, 63.86% branches, 78.67% functions, 78.2% lines
 - **Add integration tests** with real API calls using recorded responses
 - **Add E2E tests** for complete download scenarios
 
@@ -368,7 +371,23 @@ Add observability to understand system behavior:
 
 ## Changelog
 
-### Version 1.6.0 (Latest)
+### Version 1.7.0 (Latest)
+- **Per-Profile State Files**: Docker-optimized state management stored in download folders
+  - State stored as `.download-state.json` in each profile's download folder
+  - Perfect for Docker containers where download volume is persistent but profiles.txt may be read-only
+  - Automatically skips completed profiles on subsequent runs
+  - Tracks completion status, timestamps, post/image counts, and errors per profile
+  - No modification of `profiles.txt` required
+  - Easy reset: delete `.download-state.json` file from profile folder
+  - Works seamlessly with Docker + NAS storage setups (e.g., Synology)
+- **Version Display**: Shows application version on startup for easy Docker verification
+  - Displays version banner from package.json
+  - Helps verify correct deployment in containerized environments
+- **Test Suite Expansion**: 391 passing tests with 77.36% overall coverage (improved from 75.01%)
+  - Added 27 comprehensive tests for profile file management (97.64% coverage)
+  - Improved kemonoApi.js coverage from 44.85% to 79.71%
+
+### Version 1.6.0
 - **Download State Management Tools**: Added utilities to manage and rebuild download state
   - New `rebuild-state` command to scan existing downloads and create state file
   - New `check-state` command to view current download state statistics
@@ -376,6 +395,7 @@ Add observability to understand system behavior:
   - Critical performance improvement for large profile collections (450+ profiles)
   - Persistent state tracking across Docker container restarts
   - State file can be mounted as volume for Docker deployments
+  - **Note**: Superseded by per-profile state files in v1.7.0 for better Docker compatibility
 - **State Tracking Enhancement**: Improved existing download state tracking with utility scripts
   - Solves slow startup times caused by re-verifying all previously downloaded posts
   - Enables quick resume for interrupted downloads
