@@ -130,8 +130,33 @@ function extractPostsFromProfileHTML($, profileUrl) {
 function extractMediaFromPostHTML($, postUrl) {
   const mediaFiles = [];
   const baseUrl = 'https://kemono.cr';
+  const seenPaths = new Set(); // Track URL paths to deduplicate across CDN hostnames
 
   console.log('  📄 Using enhanced HTML parser for media extraction...');
+
+  /**
+   * Extract the path portion of a URL for deduplication.
+   * Different CDN hostnames (n1.kemono.cr, n2.kemono.cr, kemono.cr) serve the same files,
+   * so we deduplicate by path to avoid downloading the same file multiple times.
+   */
+  function getUrlPath(url) {
+    try {
+      const parsed = new URL(url);
+      // Strip query params and return just the pathname
+      return parsed.pathname;
+    } catch {
+      return url;
+    }
+  }
+
+  function isDuplicate(fullUrl) {
+    const urlPath = getUrlPath(fullUrl);
+    if (seenPaths.has(urlPath)) {
+      return true;
+    }
+    seenPaths.add(urlPath);
+    return false;
+  }
 
   // Strategy 1: Look for fileThumb links (actual kemono.cr structure)
   $('.post__files .fileThumb, .post__thumbnail .fileThumb, a.fileThumb').each((index, element) => {
@@ -142,8 +167,8 @@ function extractMediaFromPostHTML($, postUrl) {
     if (downloadLink && isDownloadableUrl(downloadLink)) {
       const fullUrl = downloadLink.startsWith('http') ? downloadLink : `https:${downloadLink}`;
 
-      // Avoid duplicates
-      if (!mediaFiles.some(m => m.url === fullUrl)) {
+      // Avoid duplicates by URL path
+      if (!isDuplicate(fullUrl)) {
         mediaFiles.push({
           url: fullUrl,
           filename: filename || null,
@@ -167,7 +192,7 @@ function extractMediaFromPostHTML($, postUrl) {
       const fullUrl = downloadLink.startsWith('http') ? downloadLink : (downloadLink.startsWith('//') ? `https:${downloadLink}` : `${baseUrl}${downloadLink}`);
       const filename = link.text().trim() || link.attr('download') || $attachment.find('.post__attachment-name').text().trim();
 
-      if (!mediaFiles.some(m => m.url === fullUrl)) {
+      if (!isDuplicate(fullUrl)) {
         mediaFiles.push({
           url: fullUrl,
           filename: filename || null,
@@ -209,10 +234,7 @@ function extractMediaFromPostHTML($, postUrl) {
 
       fullUrl = fullUrl.startsWith('http') ? fullUrl : (fullUrl.startsWith('//') ? `https:${fullUrl}` : `${baseUrl}${fullUrl}`);
 
-      // Avoid duplicates - check both full and thumbnail URLs
-      const isDuplicate = mediaFiles.some(m => m.url === fullUrl || m.thumbnailUrl === fullUrl);
-
-      if (!isDuplicate) {
+      if (!isDuplicate(fullUrl)) {
         mediaFiles.push({
           url: fullUrl,
           thumbnailUrl: thumbnailUrl, // Keep thumbnail as fallback
@@ -233,7 +255,7 @@ function extractMediaFromPostHTML($, postUrl) {
     if (videoSrc) {
       const fullUrl = videoSrc.startsWith('http') ? videoSrc : (videoSrc.startsWith('//') ? `https:${videoSrc}` : `${baseUrl}${videoSrc}`);
 
-      if (!mediaFiles.some(m => m.url === fullUrl)) {
+      if (!isDuplicate(fullUrl)) {
         mediaFiles.push({
           url: fullUrl,
           filename: null,
@@ -253,7 +275,7 @@ function extractMediaFromPostHTML($, postUrl) {
     if (href && isDownloadableUrl(href)) {
       const fullUrl = href.startsWith('http') ? href : (href.startsWith('//') ? `https:${href}` : `${baseUrl}${href}`);
 
-      if (!mediaFiles.some(m => m.url === fullUrl)) {
+      if (!isDuplicate(fullUrl)) {
         mediaFiles.push({
           url: fullUrl,
           filename: $link.attr('download') || $link.text().trim() || null,
@@ -273,7 +295,7 @@ function extractMediaFromPostHTML($, postUrl) {
     if (dataUrl && isDownloadableUrl(dataUrl) && !dataUrl.includes('/thumbnail/')) {
       const fullUrl = dataUrl.startsWith('http') ? dataUrl : (dataUrl.startsWith('//') ? `https:${dataUrl}` : `${baseUrl}${dataUrl}`);
 
-      if (!mediaFiles.some(m => m.url === fullUrl)) {
+      if (!isDuplicate(fullUrl)) {
         mediaFiles.push({
           url: fullUrl,
           filename: null,
@@ -311,7 +333,7 @@ function extractMediaFromPostHTML($, postUrl) {
         continue;
       }
 
-      if (isDownloadableUrl(url) && !mediaFiles.some(m => m.url === url)) {
+      if (isDownloadableUrl(url) && !isDuplicate(url)) {
         mediaFiles.push({
           url: url,
           filename: null,

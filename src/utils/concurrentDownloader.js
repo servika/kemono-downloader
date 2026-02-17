@@ -20,15 +20,40 @@ class ConcurrentDownloader {
 
   async downloadImages(images, postDir, onProgress, onComplete) {
     this.stats = { completed: 0, failed: 0, skipped: 0 };
-    const totalImages = images.length;
-    
+
+    // Deduplicate by resolved filename to avoid downloading the same file multiple times
+    // This catches cases where the same file appears with different CDN hostnames or query params
+    let uniqueImages = images;
+    try {
+      const { getImageName } = require('./urlUtils');
+      const seenFilenames = new Set();
+      const deduped = [];
+      for (let i = 0; i < images.length; i++) {
+        const filename = getImageName(images[i], i);
+        if (!seenFilenames.has(filename)) {
+          seenFilenames.add(filename);
+          deduped.push(images[i]);
+        }
+      }
+
+      if (deduped.length < images.length) {
+        const dupeCount = images.length - deduped.length;
+        if (onProgress) onProgress(`⚠️  Skipped ${dupeCount} duplicate file(s)`);
+      }
+      uniqueImages = deduped;
+    } catch {
+      // If deduplication fails, proceed with original list
+    }
+
+    const totalImages = uniqueImages.length;
+
     if (totalImages === 0) {
       if (onComplete) onComplete(this.stats);
       return;
     }
 
-    // Create download tasks
-    const downloadTasks = images.map((imageInfo, index) => 
+    // Create download tasks from deduplicated list
+    const downloadTasks = uniqueImages.map((imageInfo, index) =>
       this.createDownloadTask(imageInfo, index, postDir, onProgress)
     );
 
