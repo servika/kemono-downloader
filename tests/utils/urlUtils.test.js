@@ -7,6 +7,8 @@ const {
   isImageUrl,
   isVideoUrl,
   isArchiveUrl,
+  isAudioUrl,
+  isDocumentUrl,
   isMediaUrl,
   isDownloadableUrl,
   getImageName,
@@ -182,6 +184,68 @@ describe('urlUtils', () => {
     });
   });
 
+  describe('isAudioUrl', () => {
+    test('should identify audio URLs correctly', () => {
+      expect(isAudioUrl('https://example.com/song.mp3')).toBe(true);
+      expect(isAudioUrl('https://example.com/track.wav')).toBe(true);
+      expect(isAudioUrl('https://example.com/music.flac')).toBe(true);
+      expect(isAudioUrl('https://example.com/audio.ogg')).toBe(true);
+      expect(isAudioUrl('https://example.com/audio.aac')).toBe(true);
+      expect(isAudioUrl('https://example.com/audio.m4a')).toBe(true);
+      expect(isAudioUrl('https://example.com/audio.opus')).toBe(true);
+      expect(isAudioUrl('https://example.com/audio.aiff')).toBe(true);
+    });
+
+    test('should reject non-audio URLs', () => {
+      expect(isAudioUrl('https://example.com/image.jpg')).toBe(false);
+      expect(isAudioUrl('https://example.com/video.mp4')).toBe(false);
+      expect(isAudioUrl('https://example.com/page.html')).toBe(false);
+    });
+
+    test('should handle edge cases', () => {
+      expect(isAudioUrl(null)).toBe(false);
+      expect(isAudioUrl(undefined)).toBe(false);
+      expect(isAudioUrl('')).toBe(false);
+      expect(isAudioUrl(123)).toBe(false);
+    });
+  });
+
+  describe('isDocumentUrl', () => {
+    test('should identify document URLs correctly', () => {
+      expect(isDocumentUrl('https://example.com/doc.pdf')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.psd')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.clip')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.sai')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.sai2')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.ai')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.eps')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.kra')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.xcf')).toBe(true);
+    });
+
+    test('should identify other document types', () => {
+      expect(isDocumentUrl('https://example.com/file.doc')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.docx')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.txt')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.blend')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.ttf')).toBe(true);
+      expect(isDocumentUrl('https://example.com/file.swf')).toBe(true);
+    });
+
+    test('should reject non-document URLs', () => {
+      expect(isDocumentUrl('https://example.com/image.jpg')).toBe(false);
+      expect(isDocumentUrl('https://example.com/video.mp4')).toBe(false);
+      expect(isDocumentUrl('https://example.com/page.html')).toBe(false);
+    });
+
+    test('should handle edge cases', () => {
+      expect(isDocumentUrl(null)).toBe(false);
+      expect(isDocumentUrl(undefined)).toBe(false);
+      expect(isDocumentUrl('')).toBe(false);
+      expect(isDocumentUrl(123)).toBe(false);
+    });
+  });
+
   describe('isMediaUrl', () => {
     test('should identify media URLs (images and videos)', () => {
       expect(isMediaUrl('https://example.com/image.jpg')).toBe(true);
@@ -192,11 +256,19 @@ describe('urlUtils', () => {
   });
 
   describe('isDownloadableUrl', () => {
-    test('should identify downloadable URLs (images, videos, and archives)', () => {
+    test('should identify downloadable URLs (images, videos, archives, audio, documents)', () => {
       expect(isDownloadableUrl('https://example.com/image.jpg')).toBe(true);
       expect(isDownloadableUrl('https://example.com/video.mp4')).toBe(true);
       expect(isDownloadableUrl('https://example.com/archive.zip')).toBe(true);
-      expect(isDownloadableUrl('https://example.com/document.pdf')).toBe(false);
+      expect(isDownloadableUrl('https://example.com/document.pdf')).toBe(true);
+      expect(isDownloadableUrl('https://example.com/art.psd')).toBe(true);
+      expect(isDownloadableUrl('https://example.com/song.mp3')).toBe(true);
+      expect(isDownloadableUrl('https://example.com/project.clip')).toBe(true);
+    });
+
+    test('should reject non-downloadable URLs', () => {
+      expect(isDownloadableUrl('https://example.com/page.html')).toBe(false);
+      expect(isDownloadableUrl('https://example.com/style.css')).toBe(false);
     });
 
     test('should handle edge cases', () => {

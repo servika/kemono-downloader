@@ -439,7 +439,7 @@ describe('kemonoApi', () => {
       expect(result[50].title).toBe('Data Nested Post 51');
     });
 
-    test('should hit safety limit at 100 pages', async () => {
+    test('should hit safety limit at 1000 pages', async () => {
       const mockOnLog = jest.fn();
 
       // Mock infinite pagination scenario
@@ -457,14 +457,14 @@ describe('kemonoApi', () => {
         .mockResolvedValueOnce({ data: pageWithPosts });
 
       // Keep returning posts for pagination (would be infinite without safety limit)
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < 1500; i++) {
         browserClient.fetchJSON.mockResolvedValueOnce({ data: [{ id: String(1000 + i) }] });
       }
 
       const result = await fetchPostsFromAPI('patreon', '12345', mockOnLog);
 
-      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Reached safety limit of 100 pages'));
-      expect(result.length).toBeLessThan(5100); // Should stop at 100 pages
+      expect(mockOnLog).toHaveBeenCalledWith(expect.stringContaining('Reached safety limit of 1000 pages'));
+      expect(result.length).toBeLessThan(50100); // Should stop at 1000 pages (50,000 posts + some buffer)
     });
   });
 });

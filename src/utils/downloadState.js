@@ -1,19 +1,48 @@
+/**
+ * @fileoverview Legacy download state manager for centralized state tracking
+ * This module has been superseded by ProfileStateManager which uses per-profile state files.
+ * Maintains backward compatibility for projects using centralized download-state.json.
+ */
+
 const fs = require('fs-extra');
 const path = require('path');
 
 /**
- * Download state manager for tracking profile download completion
- * Persists state to download-state.json to avoid re-downloading completed profiles
+ * Download state manager for tracking profile download completion.
+ * Persists state to centralized download-state.json to avoid re-downloading completed profiles.
+ *
+ * @class DownloadState
+ * @deprecated Use ProfileStateManager for Docker-optimized per-profile state tracking
+ *
+ * @example
+ * const state = new DownloadState();
+ * state.initializeProfile('patreon', '12345', 150);
+ * state.updateProgress('patreon', '12345', 75);
+ * state.markCompleted('patreon', '12345');
  */
 class DownloadState {
+    /**
+     * Create a new DownloadState instance
+     *
+     * @param {string} [stateFilePath=null] - Optional custom path to state file (defaults to download-state.json)
+     *
+     * @example
+     * const state = new DownloadState(); // Uses default path
+     * const customState = new DownloadState('./custom-state.json');
+     */
     constructor(stateFilePath = null) {
         this.stateFilePath = stateFilePath || path.join(process.cwd(), 'download-state.json');
         this.state = this.loadState();
     }
 
     /**
-     * Load state from file, creating empty state if file doesn't exist
-     * @returns {Object} State object with profiles
+     * Load download state from file
+     * Creates empty state object if file doesn't exist or is corrupted
+     *
+     * @private
+     * @returns {Object} State object with profiles property
+     * @returns {Object} returns.profiles - Map of profile keys to profile state
+     * @returns {string} returns.version - State file version
      */
     loadState() {
         try {
@@ -28,8 +57,11 @@ class DownloadState {
     }
 
     /**
-     * Save current state to file
-     * @throws {Error} If save fails
+     * Save current download state to file
+     * Writes state as formatted JSON with 2-space indentation
+     *
+     * @private
+     * @throws {Error} If file write operation fails
      */
     saveState() {
         try {
@@ -41,20 +73,25 @@ class DownloadState {
     }
 
     /**
-     * Get profile key from service and user_id
-     * @param {string} service - Service name (e.g., 'patreon')
-     * @param {string} userId - User ID
-     * @returns {string} Profile key
+     * Generate unique profile key from service and user ID
+     *
+     * @param {string} service - Service name (e.g., 'patreon', 'fanbox')
+     * @param {string} userId - Numeric user ID
+     * @returns {string} Profile key in format "service:userId"
+     *
+     * @example
+     * getProfileKey('patreon', '12345') // Returns "patreon:12345"
      */
     getProfileKey(service, userId) {
         return `${service}:${userId}`;
     }
 
     /**
-     * Check if profile is completed
+     * Check if a profile download is marked as completed
+     *
      * @param {string} service - Service name
      * @param {string} userId - User ID
-     * @returns {boolean} True if profile is marked as completed
+     * @returns {boolean} True if profile exists and is marked completed
      */
     isProfileCompleted(service, userId) {
         const key = this.getProfileKey(service, userId);
@@ -63,10 +100,18 @@ class DownloadState {
     }
 
     /**
-     * Get profile progress information
+     * Retrieve current download progress for a profile
+     *
      * @param {string} service - Service name
      * @param {string} userId - User ID
-     * @returns {Object|null} Profile progress or null if not found
+     * @returns {Object|null} Profile progress object or null if profile not found
+     * @returns {string} returns.service - Service name
+     * @returns {string} returns.userId - User ID
+     * @returns {number} returns.totalPosts - Total posts expected
+     * @returns {number} returns.downloadedPosts - Posts downloaded so far
+     * @returns {boolean} returns.completed - Whether download is complete
+     * @returns {string} returns.startedAt - ISO timestamp when started
+     * @returns {string} returns.lastUpdatedAt - ISO timestamp of last update
      */
     getProfileProgress(service, userId) {
         const key = this.getProfileKey(service, userId);
@@ -75,9 +120,14 @@ class DownloadState {
 
     /**
      * Initialize or update profile download tracking
+     * Preserves existing download progress if profile was previously initialized
+     *
      * @param {string} service - Service name
      * @param {string} userId - User ID
-     * @param {number} totalPosts - Total number of posts
+     * @param {number} totalPosts - Total number of posts to download
+     *
+     * @example
+     * state.initializeProfile('patreon', '12345', 150);
      */
     initializeProfile(service, userId, totalPosts) {
         const key = this.getProfileKey(service, userId);
@@ -97,10 +147,12 @@ class DownloadState {
     }
 
     /**
-     * Update profile progress
+     * Update download progress for a profile
+     *
      * @param {string} service - Service name
      * @param {string} userId - User ID
-     * @param {number} downloadedPosts - Number of posts downloaded
+     * @param {number} downloadedPosts - Number of posts successfully downloaded
+     * @throws {Error} If profile has not been initialized
      */
     updateProgress(service, userId, downloadedPosts) {
         const key = this.getProfileKey(service, userId);
@@ -115,9 +167,12 @@ class DownloadState {
     }
 
     /**
-     * Mark profile as completed
+     * Mark a profile as fully completed
+     * Sets completion flag and records completion timestamp
+     *
      * @param {string} service - Service name
      * @param {string} userId - User ID
+     * @throws {Error} If profile has not been initialized
      */
     markCompleted(service, userId) {
         const key = this.getProfileKey(service, userId);
@@ -133,7 +188,9 @@ class DownloadState {
     }
 
     /**
-     * Reset profile state (for re-downloading)
+     * Reset profile state to allow re-downloading
+     * Completely removes profile from state tracking
+     *
      * @param {string} service - Service name
      * @param {string} userId - User ID
      */
@@ -144,8 +201,12 @@ class DownloadState {
     }
 
     /**
-     * Get all completed profiles
-     * @returns {Array} Array of completed profile keys
+     * Get list of all completed profile keys
+     *
+     * @returns {string[]} Array of profile keys in "service:userId" format
+     *
+     * @example
+     * getCompletedProfiles() // Returns ['patreon:12345', 'fanbox:67890']
      */
     getCompletedProfiles() {
         return Object.entries(this.state.profiles)
@@ -154,8 +215,14 @@ class DownloadState {
     }
 
     /**
-     * Get statistics about download state
-     * @returns {Object} Statistics object
+     * Get comprehensive download statistics across all profiles
+     *
+     * @returns {Object} Statistics summary
+     * @returns {number} returns.total - Total profiles tracked
+     * @returns {number} returns.completed - Profiles marked as completed
+     * @returns {number} returns.inProgress - Profiles currently in progress
+     * @returns {number} returns.totalPosts - Sum of all posts across profiles
+     * @returns {number} returns.downloadedPosts - Sum of downloaded posts
      */
     getStatistics() {
         const profiles = Object.values(this.state.profiles);

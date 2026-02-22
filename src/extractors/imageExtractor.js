@@ -1,8 +1,16 @@
-const { isImageUrl, isVideoUrl, isArchiveUrl, isMediaUrl, isDownloadableUrl } = require('../utils/urlUtils');
+const { isImageUrl, isVideoUrl, isArchiveUrl, isAudioUrl, isDocumentUrl, isMediaUrl, isDownloadableUrl } = require('../utils/urlUtils');
 
 /**
- * Media extraction utilities for images and videos
+ * Media extraction utilities for images, videos, and other files
  */
+
+function classifyUrl(url) {
+  if (isVideoUrl(url)) return { mediaType: 'video', emoji: '🎥' };
+  if (isArchiveUrl(url)) return { mediaType: 'archive', emoji: '📦' };
+  if (isAudioUrl(url)) return { mediaType: 'audio', emoji: '🎵' };
+  if (isDocumentUrl(url)) return { mediaType: 'document', emoji: '📄' };
+  return { mediaType: 'image', emoji: '🖼️' };
+}
 
 function extractMediaFromPostData(postData) {
   const mediaFiles = [];
@@ -14,19 +22,8 @@ function extractMediaFromPostData(postData) {
     if (postData.post?.file?.path) {
       const mainFileUrl = `https://kemono.cr${postData.post.file.path}`;
       if (isDownloadableUrl(mainFileUrl)) {
-        const isVideo = isVideoUrl(mainFileUrl);
-        const isArchive = isArchiveUrl(mainFileUrl);
-        let mediaType = 'image';
-        let emoji = '🖼️';
-        
-        if (isVideo) {
-          mediaType = 'video';
-          emoji = '🎥';
-        } else if (isArchive) {
-          mediaType = 'archive';
-          emoji = '📦';
-        }
-        
+        const { mediaType, emoji } = classifyUrl(mainFileUrl);
+
         mediaFiles.push({
           url: mainFileUrl,
           filename: postData.post.file.name || null,
@@ -42,19 +39,8 @@ function extractMediaFromPostData(postData) {
       for (const attachment of postData.post.attachments) {
         if (attachment.path && isDownloadableUrl(attachment.path)) {
           const attachmentUrl = `https://kemono.cr${attachment.path}`;
-          const isVideo = isVideoUrl(attachmentUrl);
-          const isArchive = isArchiveUrl(attachmentUrl);
-          let mediaType = 'image';
-          let emoji = '🖼️';
-          
-          if (isVideo) {
-            mediaType = 'video';
-            emoji = '🎥';
-          } else if (isArchive) {
-            mediaType = 'archive';
-            emoji = '📦';
-          }
-          
+          const { mediaType, emoji } = classifyUrl(attachmentUrl);
+
           mediaFiles.push({
             url: attachmentUrl,
             filename: attachment.name || null,
@@ -74,19 +60,8 @@ function extractMediaFromPostData(postData) {
           // Only add if we don't already have this image from main/attachments
           const isDuplicate = mediaFiles.some(media => media.url.includes(preview.path));
           if (!isDuplicate && isDownloadableUrl(previewUrl)) {
-            const isVideo = isVideoUrl(previewUrl);
-            const isArchive = isArchiveUrl(previewUrl);
-            let mediaType = 'image';
-            let emoji = '🖼️';
-            
-            if (isVideo) {
-              mediaType = 'video';
-              emoji = '🎥';
-            } else if (isArchive) {
-              mediaType = 'archive';
-              emoji = '📦';
-            }
-            
+            const { mediaType, emoji } = classifyUrl(previewUrl);
+
             mediaFiles.push({
               url: previewUrl,
               filename: preview.name || null,
@@ -116,16 +91,8 @@ function extractMediaFromPostData(postData) {
           const fullUrl = `https://kemono.cr${source}`;
           const alreadyExists = mediaFiles.some(media => media.url === fullUrl);
           if (!alreadyExists) {
-            const isVideo = isVideoUrl(fullUrl);
-            const isArchive = isArchiveUrl(fullUrl);
-            let mediaType = 'image';
-            
-            if (isVideo) {
-              mediaType = 'video';
-            } else if (isArchive) {
-              mediaType = 'archive';
-            }
-            
+            const { mediaType } = classifyUrl(fullUrl);
+
             mediaFiles.push({
               url: fullUrl,
               filename: null,
@@ -135,21 +102,13 @@ function extractMediaFromPostData(postData) {
           }
         } else {
           // Extract downloadable URLs from content text
-          const mediaMatches = source.match(/https?:\/\/[^\s"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|avi|mov|wmv|flv|mkv|m4v|3gp|ogv|zip|rar|7z|tar)/gi);
+          const mediaMatches = source.match(/https?:\/\/[^\s"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|avif|jxl|tiff|svg|ico|raw|cr2|cr3|nef|nrw|arw|srf|sr2|raf|orf|rw2|pef|dng|x3f|3fr|erf|mrw|srw|mp4|webm|avi|mov|wmv|flv|mkv|m4v|3gp|ogv|mp3|wav|flac|ogg|aac|wma|m4a|opus|aiff|zip|rar|7z|tar|psd|clip|sai|sai2|ai|eps|kra|xcf|pdf|doc|docx|txt|rtf|csv|xls|xlsx|pptx|blend|fbx|obj|stl|srt|ass|vtt|ttf|otf|woff|woff2|swf|exe|apk|dmg|abr|afdesign|afphoto|sketch|fig|indd|cdr|procreate|mdp)/gi);
           if (mediaMatches) {
             for (const match of mediaMatches) {
               const alreadyExists = mediaFiles.some(media => media.url === match);
               if (!alreadyExists) {
-                const isVideo = isVideoUrl(match);
-                const isArchive = isArchiveUrl(match);
-                let mediaType = 'image';
-                
-                if (isVideo) {
-                  mediaType = 'video';
-                } else if (isArchive) {
-                  mediaType = 'archive';
-                }
-                
+                const { mediaType } = classifyUrl(match);
+
                 mediaFiles.push({
                   url: match,
                   filename: null,
@@ -167,16 +126,8 @@ function extractMediaFromPostData(postData) {
             const fullUrl = item.startsWith('http') ? item : `https://kemono.cr${item}`;
             const alreadyExists = mediaFiles.some(media => media.url === fullUrl);
             if (!alreadyExists) {
-              const isVideo = isVideoUrl(fullUrl);
-              const isArchive = isArchiveUrl(fullUrl);
-              let mediaType = 'image';
-              
-              if (isVideo) {
-                mediaType = 'video';
-              } else if (isArchive) {
-                mediaType = 'archive';
-              }
-              
+              const { mediaType } = classifyUrl(fullUrl);
+
               mediaFiles.push({
                 url: fullUrl,
                 filename: null,
@@ -191,16 +142,8 @@ function extractMediaFromPostData(postData) {
               const fullUrl = attachmentUrl.startsWith('http') ? attachmentUrl : `https://kemono.cr${attachmentUrl}`;
               const alreadyExists = mediaFiles.some(media => media.url === fullUrl);
               if (!alreadyExists) {
-                const isVideo = isVideoUrl(fullUrl);
-                const isArchive = isArchiveUrl(fullUrl);
-                let mediaType = 'image';
-                
-                if (isVideo) {
-                  mediaType = 'video';
-                } else if (isArchive) {
-                  mediaType = 'archive';
-                }
-                
+                const { mediaType } = classifyUrl(fullUrl);
+
                 mediaFiles.push({
                   url: fullUrl,
                   filename: item.name || null,
@@ -291,20 +234,11 @@ function extractMediaFromHTML($) {
     }
   });
 
-  // Priority 5: Find file attachments (including archives)
+  // Priority 5: Find file attachments (including archives, documents, audio, etc.)
   $('.post__attachment a').each((index, element) => {
     const attachmentUrl = $(element).attr('href');
     if (attachmentUrl && isDownloadableUrl(attachmentUrl)) {
-      const isVideo = isVideoUrl(attachmentUrl);
-      const isArchive = isArchiveUrl(attachmentUrl);
-      let mediaType = 'image';
-
-      if (isVideo) {
-        mediaType = 'video';
-      } else if (isArchive) {
-        mediaType = 'archive';
-      }
-
+      const { mediaType } = classifyUrl(attachmentUrl);
       addMediaFile(attachmentUrl, mediaType);
     }
   });

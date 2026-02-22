@@ -297,7 +297,7 @@ class BrowserClient {
         }
 
         // Priority 1: Find all download links (these are full-size)
-        const links = document.querySelectorAll('a.post__attachment-link, a.fileThumb, a[download], a[href*="/data/"], a[href*=".jpg"], a[href*=".png"], a[href*=".gif"], a[href*=".webp"], a[href*=".mp4"], a[href*=".webm"]');
+        const links = document.querySelectorAll('a.post__attachment-link, a.fileThumb, a[download], a[href*="/data/"], a[href*=".jpg"], a[href*=".png"], a[href*=".gif"], a[href*=".webp"], a[href*=".mp4"], a[href*=".webm"], a[href*=".psd"], a[href*=".clip"], a[href*=".pdf"], a[href*=".mp3"], a[href*=".flac"], a[href*=".wav"], a[href*=".zip"], a[href*=".rar"]');
         links.forEach(link => {
           const href = link.href;
           if (href && !href.includes('icon') && !href.includes('avatar') && !href.includes('logo')) {

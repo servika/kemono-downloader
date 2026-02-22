@@ -2,9 +2,16 @@ const fs = require('fs-extra');
 const path = require('path');
 
 /**
- * Configuration management utilities
+ * @fileoverview Configuration management for kemono-downloader
+ * Provides a singleton Config class for managing application settings from config.json
+ * @typedef {import('./types').Config} Config
  */
 
+/**
+ * Default configuration values
+ * @type {Config}
+ * @const
+ */
 const DEFAULT_CONFIG = {
   download: {
     maxConcurrentImages: 3,
@@ -38,12 +45,40 @@ const DEFAULT_CONFIG = {
   }
 };
 
+/**
+ * Configuration manager singleton class
+ * Handles loading, saving, and accessing configuration values from config.json
+ * @class
+ */
 class Config {
+  /**
+   * Create a new Config instance
+   * Initializes with default configuration and sets config file path
+   * @constructor
+   */
   constructor() {
+    /**
+     * Current configuration object
+     * @type {Config}
+     * @private
+     */
     this.config = { ...DEFAULT_CONFIG };
+
+    /**
+     * Path to config.json file
+     * @type {string}
+     * @private
+     */
     this.configPath = path.join(process.cwd(), 'config.json');
   }
 
+  /**
+   * Load configuration from config.json file
+   * Creates default config.json if it doesn't exist
+   * Falls back to default configuration on error
+   * @async
+   * @returns {Promise<void>}
+   */
   async load() {
     try {
       if (await fs.pathExists(this.configPath)) {

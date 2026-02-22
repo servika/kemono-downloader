@@ -10,11 +10,13 @@ jest.mock('../../src/utils/urlUtils', () => ({
   isImageUrl: jest.fn(),
   isVideoUrl: jest.fn(),
   isArchiveUrl: jest.fn(),
+  isAudioUrl: jest.fn(),
+  isDocumentUrl: jest.fn(),
   isMediaUrl: jest.fn(),
   isDownloadableUrl: jest.fn()
 }));
 
-const { isImageUrl, isVideoUrl, isArchiveUrl, isMediaUrl, isDownloadableUrl } = require('../../src/utils/urlUtils');
+const { isImageUrl, isVideoUrl, isArchiveUrl, isAudioUrl, isDocumentUrl, isMediaUrl, isDownloadableUrl } = require('../../src/utils/urlUtils');
 
 describe('imageExtractor', () => {
   beforeEach(() => {
@@ -23,7 +25,7 @@ describe('imageExtractor', () => {
     // Default mock implementations
     isImageUrl.mockImplementation(url => {
       if (!url || typeof url !== 'string') return false;
-      return /\.(jpg|jpeg|png|gif|webp|bmp|tiff|svg)($|\?)/i.test(url);
+      return /\.(jpg|jpeg|png|gif|webp|bmp|tiff|svg|ico|avif|jxl|raw|cr2|cr3|nef|nrw|arw|srf|sr2|raf|orf|rw2|pef|dng|x3f|3fr|erf|mrw|srw)($|\?)/i.test(url);
     });
     
     isVideoUrl.mockImplementation(url => {
@@ -35,13 +37,23 @@ describe('imageExtractor', () => {
       if (!url || typeof url !== 'string') return false;
       return /\.(zip|rar|7z|tar|tar\.gz|tar\.bz2|tar\.xz)($|\?)/i.test(url);
     });
-    
+
+    isAudioUrl.mockImplementation(url => {
+      if (!url || typeof url !== 'string') return false;
+      return /\.(mp3|wav|flac|ogg|aac|wma|m4a|opus|aiff)($|\?)/i.test(url);
+    });
+
+    isDocumentUrl.mockImplementation(url => {
+      if (!url || typeof url !== 'string') return false;
+      return /\.(pdf|psd|clip|sai|sai2|ai|eps|kra|xcf|doc|docx|txt|rtf|blend|fbx|obj|stl|ttf|otf|swf|exe|apk)($|\?)/i.test(url);
+    });
+
     isMediaUrl.mockImplementation(url => {
       return isImageUrl(url) || isVideoUrl(url);
     });
-    
+
     isDownloadableUrl.mockImplementation(url => {
-      return isImageUrl(url) || isVideoUrl(url) || isArchiveUrl(url);
+      return isImageUrl(url) || isVideoUrl(url) || isArchiveUrl(url) || isAudioUrl(url) || isDocumentUrl(url);
     });
 
     // Mock console.log to avoid test output noise
@@ -351,14 +363,15 @@ describe('imageExtractor', () => {
         <div class="post__attachment">
           <a href="/attachment1.jpg">Image Attachment</a>
           <a href="https://example.com/video.mp4">Video Attachment</a>
-          <a href="/document.pdf">Non-media file</a>
+          <a href="/document.pdf">PDF file</a>
+          <a href="/page.html">Non-downloadable file</a>
         </div>
       `;
       const $ = cheerio.load(html);
 
       const result = extractMediaFromHTML($);
 
-      expect(result).toHaveLength(2); // PDF should be filtered out
+      expect(result).toHaveLength(3); // HTML should be filtered out
       expect(result[0]).toEqual({
         url: 'https://kemono.cr/attachment1.jpg',
         mediaType: 'image',
@@ -367,6 +380,11 @@ describe('imageExtractor', () => {
       expect(result[1]).toEqual({
         url: 'https://example.com/video.mp4',
         mediaType: 'video',
+        type: 'html'
+      });
+      expect(result[2]).toEqual({
+        url: 'https://kemono.cr/document.pdf',
+        mediaType: 'document',
         type: 'html'
       });
     });

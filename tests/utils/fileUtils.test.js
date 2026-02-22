@@ -229,24 +229,27 @@ describe('fileUtils', () => {
     });
 
     test('should show progress for all files with known size', async () => {
-      const mockStream = Readable.from([Buffer.alloc(512), Buffer.alloc(512)]);
+      const chunks = [Buffer.alloc(512), Buffer.alloc(512)];
+      const mockStream = Readable.from(chunks);
       const mockResponse = {
         data: mockStream,
         headers: { 'content-length': '1024' } // 1KB
       };
-      
+
       axios.mockResolvedValue(mockResponse);
-      
+
       const mockWriter = new PassThrough();
       jest.spyOn(mockWriter, 'destroy');
-      
+
+      // Mock stat to return correct file size
+      fs.stat.mockResolvedValue({ size: 1024 });
       fs.createWriteStream.mockReturnValue(mockWriter);
       fs.ensureDir.mockResolvedValue();
-      
+
       const onProgress = jest.fn();
-      
+
       await downloadImage('https://example.com/small.jpg', '/test/small.jpg', onProgress);
-      
+
       // Should show progress for all files with known size
       expect(onProgress).toHaveBeenCalledWith(expect.stringMatching(/\d+%/));
     });
@@ -279,8 +282,8 @@ describe('fileUtils', () => {
 
   describe('downloadImageWithRetry', () => {
     test('should retry on server errors', async () => {
-      const mockStream = Readable.from([Buffer.from('data')]);
-      
+      const mockStream = Readable.from([Buffer.alloc(10)]);
+
       axios
         .mockRejectedValueOnce({ response: { status: 500 }, message: 'Server error' })
         .mockResolvedValueOnce({
@@ -326,8 +329,8 @@ describe('fileUtils', () => {
     });
 
     test('should retry on timeout errors', async () => {
-      const mockStream = Readable.from([Buffer.from('data')]);
-      
+      const mockStream = Readable.from([Buffer.alloc(10)]);
+
       axios
         .mockRejectedValueOnce({ code: 'ECONNABORTED', message: 'timeout' })
         .mockResolvedValueOnce({
@@ -347,7 +350,7 @@ describe('fileUtils', () => {
     });
 
     test('should retry on 403 errors', async () => {
-      const mockStream = Readable.from([Buffer.from('data')]);
+      const mockStream = Readable.from([Buffer.alloc(10)]);
 
       axios
         .mockRejectedValueOnce({ response: { status: 403 }, message: 'Forbidden' })
@@ -369,7 +372,7 @@ describe('fileUtils', () => {
     });
 
     test('should try thumbnail URL when full resolution returns 404', async () => {
-      const mockStream = Readable.from([Buffer.from('thumbnail data')]);
+      const mockStream = Readable.from([Buffer.alloc(10)]);
 
       const notFoundError = new Error('Not found');
       notFoundError.response = { status: 404 };
@@ -408,7 +411,7 @@ describe('fileUtils', () => {
     });
 
     test('should not try thumbnail if full resolution succeeds', async () => {
-      const mockStream = Readable.from([Buffer.from('full res data')]);
+      const mockStream = Readable.from([Buffer.alloc(10)]);
 
       axios.mockResolvedValueOnce({
         data: mockStream,
@@ -517,8 +520,8 @@ describe('fileUtils', () => {
 
   describe('downloadMedia and downloadMediaWithRetry', () => {
     test('downloadMedia should be alias for downloadImage', async () => {
-      const mockStream = Readable.from([Buffer.from('data')]);
-      
+      const mockStream = Readable.from([Buffer.alloc(10)]);
+
       axios.mockResolvedValue({
         data: mockStream,
         headers: { 'content-length': '10' }
