@@ -117,6 +117,8 @@ async function downloadImage(imageUrl, filepath, onProgress) {
     let downloadedSize = 0;
     let lastProgressTime = 0;
     const progressInterval = 1000; // Update progress every 1 second
+    // Rolling buffer of last 8 bytes for EOF marker verification
+    let streamTail = Buffer.alloc(0);
 
     return new Promise((resolve, reject) => {
       let isResolved = false;
@@ -208,6 +210,9 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       response.data.on('data', (chunk) => {
         downloadedSize += chunk.length;
         lastDataTime = Date.now(); // Update last data time for timeout management
+        // Keep rolling last-8-bytes buffer for EOF verification
+        const combined = Buffer.concat([streamTail, chunk]);
+        streamTail = combined.slice(Math.max(0, combined.length - 8));
 
         const now = Date.now();
         if (now - lastProgressTime >= progressInterval) {
@@ -234,6 +239,17 @@ async function downloadImage(imageUrl, filepath, onProgress) {
             if (onProgress) onProgress(`⚠️  ${path.basename(filepath)}: ${errorMsg}`);
             rejectOnce(new Error(errorMsg));
             return;
+          }
+
+          // Verify image EOF markers to detect partial/truncated downloads
+          // Only applies to image files large enough to be valid (>= 128 bytes)
+          if (downloadedSize >= 128) {
+            const eofCheck = checkStreamedEofMarkers(filepath, streamTail);
+            if (!eofCheck.valid) {
+              if (onProgress) onProgress(`⚠️  ${path.basename(filepath)}: ${eofCheck.reason}`);
+              rejectOnce(new Error(`Size mismatch: ${eofCheck.reason}`));
+              return;
+            }
           }
 
           if (onProgress) onProgress(`✅ Downloaded: ${path.basename(filepath)} (${formatBytes(downloadedSize)})`);
@@ -289,6 +305,81 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       if (onProgress) onProgress(`❌ Failed to download image ${imageUrl}: ${error.message}`);
     }
     throw error;
+  }
+}
+
+/**
+ * Synchronously check EOF markers against the last bytes captured during streaming.
+ * Used during download to avoid extra file I/O.
+ */
+function checkStreamedEofMarkers(filepath, tailBytes) {
+  const ext = path.extname(filepath).toLowerCase();
+
+  if (ext === '.jpg' || ext === '.jpeg') {
+    if (tailBytes.length < 2 ||
+        tailBytes[tailBytes.length - 2] !== 0xFF ||
+        tailBytes[tailBytes.length - 1] !== 0xD9) {
+      return { valid: false, reason: 'JPEG missing end-of-image marker (FF D9) — file is truncated' };
+    }
+  } else if (ext === '.png') {
+    if (tailBytes.length < 8 || tailBytes.slice(-8).toString('hex') !== '49454e44ae426082') {
+      return { valid: false, reason: 'PNG missing IEND chunk — file is truncated' };
+    }
+  } else if (ext === '.gif') {
+    if (tailBytes.length < 1 || tailBytes[tailBytes.length - 1] !== 0x3B) {
+      return { valid: false, reason: 'GIF missing trailer byte — file is truncated' };
+    }
+  }
+  return { valid: true };
+}
+
+/**
+ * Verify image file integrity by checking EOF markers.
+ * Detects truncated/partial downloads that result in gray areas.
+ * - JPEG: must end with FF D9 (end-of-image marker)
+ * - PNG:  must end with IEND chunk (49 45 4E 44 AE 42 60 82)
+ * - GIF:  must end with 0x3B (trailer byte)
+ */
+async function checkImageIntegrity(filepath) {
+  const ext = path.extname(filepath).toLowerCase();
+
+  if (!['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+    return { valid: true };
+  }
+
+  const stats = await fs.stat(filepath);
+  const fileSize = stats.size;
+
+  // Files smaller than a valid image minimum are skipped
+  if (fileSize < 128) {
+    return { valid: true };
+  }
+
+  const fsp = require('fs').promises;
+  const fd = await fsp.open(filepath, 'r');
+  try {
+    if (ext === '.jpg' || ext === '.jpeg') {
+      const tail = Buffer.alloc(2);
+      await fd.read(tail, 0, 2, fileSize - 2);
+      if (tail[0] !== 0xFF || tail[1] !== 0xD9) {
+        return { valid: false, reason: 'JPEG missing end-of-image marker (FF D9) — file is truncated' };
+      }
+    } else if (ext === '.png') {
+      const tail = Buffer.alloc(8);
+      await fd.read(tail, 0, 8, fileSize - 8);
+      if (tail.toString('hex') !== '49454e44ae426082') {
+        return { valid: false, reason: 'PNG missing IEND chunk — file is truncated' };
+      }
+    } else if (ext === '.gif') {
+      const tail = Buffer.alloc(1);
+      await fd.read(tail, 0, 1, fileSize - 1);
+      if (tail[0] !== 0x3B) {
+        return { valid: false, reason: 'GIF missing trailer byte — file is truncated' };
+      }
+    }
+    return { valid: true };
+  } finally {
+    await fd.close();
   }
 }
 
@@ -532,6 +623,7 @@ module.exports = {
   downloadImageWithRetry,
   downloadMedia,
   downloadMediaWithRetry,
+  checkImageIntegrity,
   savePostMetadata,
   saveHtmlContent,
   readProfilesFile,

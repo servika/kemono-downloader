@@ -105,6 +105,16 @@ async function verifyAllImagesDownloaded(postDir, expectedImages) {
           continue;
         }
 
+        // Check EOF markers to detect truncated/partial images (gray areas)
+        // Only for known image types with a minimum viable file size
+        if (stats.size >= 128) {
+          const eofResult = await checkEofMarkers(file, imageName, stats.size);
+          if (!eofResult.valid) {
+            corruptedFiles.push({ name: imageName, reason: eofResult.reason });
+            continue;
+          }
+        }
+
         presentCount++;
       } finally {
         await file.close();
@@ -123,6 +133,35 @@ async function verifyAllImagesDownloaded(postDir, expectedImages) {
     missingFiles,
     corruptedFiles
   };
+}
+
+/**
+ * Check EOF markers on an already-open file descriptor.
+ * Reuses the existing fd from the magic-bytes check to avoid a second open.
+ */
+async function checkEofMarkers(fd, filename, fileSize) {
+  const ext = path.extname(filename).toLowerCase();
+
+  if (ext === '.jpg' || ext === '.jpeg') {
+    const tail = Buffer.alloc(2);
+    await fd.read(tail, 0, 2, fileSize - 2);
+    if (tail[0] !== 0xFF || tail[1] !== 0xD9) {
+      return { valid: false, reason: 'JPEG missing end-of-image marker (FF D9) — file is truncated' };
+    }
+  } else if (ext === '.png') {
+    const tail = Buffer.alloc(8);
+    await fd.read(tail, 0, 8, fileSize - 8);
+    if (tail.toString('hex') !== '49454e44ae426082') {
+      return { valid: false, reason: 'PNG missing IEND chunk — file is truncated' };
+    }
+  } else if (ext === '.gif') {
+    const tail = Buffer.alloc(1);
+    await fd.read(tail, 0, 1, fileSize - 1);
+    if (tail[0] !== 0x3B) {
+      return { valid: false, reason: 'GIF missing trailer byte — file is truncated' };
+    }
+  }
+  return { valid: true };
 }
 
 function isValidMediaFile(buffer, filename) {

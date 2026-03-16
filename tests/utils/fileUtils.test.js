@@ -229,7 +229,12 @@ describe('fileUtils', () => {
     });
 
     test('should show progress for all files with known size', async () => {
-      const chunks = [Buffer.alloc(512), Buffer.alloc(512)];
+      // Second chunk ends with JPEG EOF marker (FF D9) so integrity check passes
+      const chunk1 = Buffer.alloc(512);
+      const chunk2 = Buffer.alloc(512);
+      chunk2[510] = 0xFF;
+      chunk2[511] = 0xD9;
+      const chunks = [chunk1, chunk2];
       const mockStream = Readable.from(chunks);
       const mockResponse = {
         data: mockStream,

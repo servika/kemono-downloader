@@ -75,9 +75,13 @@ describe('downloadChecker', () => {
       extractImagesFromPostData.mockReturnValue(mockImages);
 
       const mockFile = {
-        read: jest.fn().mockImplementation(async (buffer) => {
-          buffer.set([0xFF, 0xD8, 0xFF, 0xE0]);
-          return { bytesRead: 16 };
+        read: jest.fn().mockImplementation(async (buffer, bufOffset, length, position) => {
+          if (position === 0) {
+            buffer.set([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG header
+          } else {
+            buffer.set([0xFF, 0xD9]); // JPEG EOF marker
+          }
+          return { bytesRead: length };
         }),
         close: jest.fn().mockResolvedValue()
       };
@@ -135,27 +139,34 @@ describe('downloadChecker', () => {
       fs.pathExists.mockResolvedValue(true);
       fs.stat.mockResolvedValue({ size: 1024 });
       
-      const mockBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG signature
       const mockFile = {
-        read: jest.fn().mockResolvedValue({ bytesRead: 16 }),
+        read: jest.fn(),
         close: jest.fn().mockResolvedValue()
       };
       nodeFs.promises.open.mockResolvedValue(mockFile);
 
-      getImageName.mockImplementation((imageInfo, index) => 
+      getImageName.mockImplementation((imageInfo, index) =>
         index === 0 ? 'image1.jpg' : 'image2.png'
       );
 
-      // Mock PNG signature for second image
-      mockFile.read.mockImplementation((buffer) => {
-        if (getImageName.mock.calls.length <= 1) {
-          // First call - JPEG
-          buffer.set([0xFF, 0xD8, 0xFF, 0xE0]);
+      // Use position to distinguish header vs EOF reads
+      mockFile.read.mockImplementation((buffer, bufOffset, length, position) => {
+        const filename = getImageName.mock.results[getImageName.mock.results.length - 1]?.value || 'image1.jpg';
+        if (position === 0) {
+          if (filename.endsWith('.jpg')) {
+            buffer.set([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG header
+          } else {
+            buffer.set([0x89, 0x50, 0x4E, 0x47]); // PNG header
+          }
         } else {
-          // Second call - PNG
-          buffer.set([0x89, 0x50, 0x4E, 0x47]);
+          if (filename.endsWith('.jpg')) {
+            buffer.set([0xFF, 0xD9]); // JPEG EOF
+          } else {
+            // PNG IEND: 49 45 4E 44 AE 42 60 82
+            buffer.set([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
+          }
         }
-        return Promise.resolve({ bytesRead: 16 });
+        return Promise.resolve({ bytesRead: length });
       });
 
       const result = await verifyAllImagesDownloaded('/test/post', mockImages);
@@ -308,12 +319,18 @@ describe('downloadChecker', () => {
         .mockReturnValueOnce('image2.webp')
         .mockReturnValueOnce('image3.bmp');
 
-      mockFile.read.mockImplementation((buffer) => {
-        const callCount = mockFile.read.mock.calls.length;
-        if (callCount === 1) {
+      let readCallCount = 0;
+      mockFile.read.mockImplementation((buffer, bufOffset, length, position) => {
+        if (position > 0) {
+          // EOF read for GIF: return trailer byte 0x3B
+          buffer.set([0x3B]);
+          return Promise.resolve({ bytesRead: length });
+        }
+        readCallCount++;
+        if (readCallCount === 1) {
           // GIF87a signature
           buffer.write('GIF87a', 0, 'ascii');
-        } else if (callCount === 2) {
+        } else if (readCallCount === 2) {
           // WebP signature (RIFF + WEBP at offset 8)
           buffer.write('RIFF', 0, 'ascii');
           buffer.write('WEBP', 8, 'ascii');
@@ -349,9 +366,10 @@ describe('downloadChecker', () => {
         .mockReturnValueOnce('video1.mp4')
         .mockReturnValueOnce('video2.webm');
 
-      mockFile.read.mockImplementation((buffer) => {
-        const callCount = mockFile.read.mock.calls.length;
-        if (callCount === 1) {
+      let videoReadCount = 0;
+      mockFile.read.mockImplementation((buffer, bufOffset, length, position) => {
+        videoReadCount++;
+        if (videoReadCount === 1) {
           // MP4 signature (ftyp at offset 4)
           buffer.write('ftyp', 4, 'ascii');
         } else {
@@ -386,9 +404,15 @@ describe('downloadChecker', () => {
         .mockReturnValueOnce('image.jpg')
         .mockReturnValueOnce('video.mp4');
 
-      mockFile.read.mockImplementation((buffer) => {
-        const callCount = mockFile.read.mock.calls.length;
-        if (callCount === 1) {
+      let mixedReadCount = 0;
+      mockFile.read.mockImplementation((buffer, bufOffset, length, position) => {
+        if (position > 0) {
+          // EOF read for JPEG
+          buffer.set([0xFF, 0xD9]);
+          return Promise.resolve({ bytesRead: length });
+        }
+        mixedReadCount++;
+        if (mixedReadCount === 1) {
           // JPEG signature
           buffer.set([0xFF, 0xD8, 0xFF, 0xE0]);
         } else {
@@ -402,6 +426,108 @@ describe('downloadChecker', () => {
 
       expect(result.allPresent).toBe(true);
       expect(result.presentCount).toBe(2);
+    });
+
+    test('should detect truncated JPEG missing EOF marker', async () => {
+      const mockImages = [{ url: 'https://example.com/image.jpg' }];
+
+      fs.pathExists.mockResolvedValue(true);
+      fs.stat.mockResolvedValue({ size: 1024 });
+
+      const mockFile = {
+        read: jest.fn().mockImplementation((buffer, bufOffset, length, position) => {
+          if (position === 0) {
+            buffer.set([0xFF, 0xD8, 0xFF, 0xE0]); // valid JPEG header
+          } else {
+            buffer.set([0x00, 0x00]); // missing FF D9 → truncated
+          }
+          return Promise.resolve({ bytesRead: length });
+        }),
+        close: jest.fn().mockResolvedValue()
+      };
+      nodeFs.promises.open.mockResolvedValue(mockFile);
+
+      const result = await verifyAllImagesDownloaded('/test/post', mockImages);
+
+      expect(result.allPresent).toBe(false);
+      expect(result.corruptedFiles).toEqual([{
+        name: 'image_0.jpg',
+        reason: 'JPEG missing end-of-image marker (FF D9) — file is truncated'
+      }]);
+    });
+
+    test('should detect truncated PNG missing IEND chunk', async () => {
+      const mockImages = [{ url: 'https://example.com/image.png' }];
+
+      fs.pathExists.mockResolvedValue(true);
+      fs.stat.mockResolvedValue({ size: 1024 });
+      getImageName.mockReturnValue('image_0.png');
+
+      const mockFile = {
+        read: jest.fn().mockImplementation((buffer, bufOffset, length, position) => {
+          if (position === 0) {
+            buffer.set([0x89, 0x50, 0x4E, 0x47]); // valid PNG header
+          } else {
+            buffer.fill(0); // missing IEND → truncated
+          }
+          return Promise.resolve({ bytesRead: length });
+        }),
+        close: jest.fn().mockResolvedValue()
+      };
+      nodeFs.promises.open.mockResolvedValue(mockFile);
+
+      const result = await verifyAllImagesDownloaded('/test/post', mockImages);
+
+      expect(result.allPresent).toBe(false);
+      expect(result.corruptedFiles[0].reason).toContain('PNG missing IEND chunk');
+    });
+
+    test('should detect truncated GIF missing trailer byte', async () => {
+      const mockImages = [{ url: 'https://example.com/image.gif' }];
+
+      fs.pathExists.mockResolvedValue(true);
+      fs.stat.mockResolvedValue({ size: 1024 });
+      getImageName.mockReturnValue('image_0.gif');
+
+      const mockFile = {
+        read: jest.fn().mockImplementation((buffer, bufOffset, length, position) => {
+          if (position === 0) {
+            buffer.write('GIF89a', 0, 'ascii'); // valid GIF header
+          } else {
+            buffer.set([0x00]); // missing 0x3B trailer
+          }
+          return Promise.resolve({ bytesRead: length });
+        }),
+        close: jest.fn().mockResolvedValue()
+      };
+      nodeFs.promises.open.mockResolvedValue(mockFile);
+
+      const result = await verifyAllImagesDownloaded('/test/post', mockImages);
+
+      expect(result.allPresent).toBe(false);
+      expect(result.corruptedFiles[0].reason).toContain('GIF missing trailer byte');
+    });
+
+    test('should skip EOF check for small files under 128 bytes', async () => {
+      const mockImages = [{ url: 'https://example.com/image.jpg' }];
+
+      fs.pathExists.mockResolvedValue(true);
+      fs.stat.mockResolvedValue({ size: 64 }); // under 128-byte threshold
+
+      const mockFile = {
+        read: jest.fn().mockImplementation((buffer) => {
+          buffer.set([0xFF, 0xD8, 0xFF, 0xE0]); // valid JPEG header, no EOF check
+          return Promise.resolve({ bytesRead: 16 });
+        }),
+        close: jest.fn().mockResolvedValue()
+      };
+      nodeFs.promises.open.mockResolvedValue(mockFile);
+
+      const result = await verifyAllImagesDownloaded('/test/post', mockImages);
+
+      // EOF check skipped for tiny files — only header check done
+      expect(result.allPresent).toBe(true);
+      expect(result.presentCount).toBe(1);
     });
   });
 
