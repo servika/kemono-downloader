@@ -7,6 +7,8 @@ const { extractImagesFromPostData, extractImagesFromHTML } = require('../src/ext
 const { isPostAlreadyDownloaded, getDownloadStatus, verifyAllImagesDownloaded } = require('../src/utils/downloadChecker');
 const ConcurrentDownloader = require('../src/utils/concurrentDownloader');
 const browserClient = require('../src/utils/browserClient');
+const CompletedProfilesRegistry = require('../src/utils/completedProfilesRegistry');
+const ProfileFileManager = require('../src/utils/profileFileManager');
 const fs = require('fs-extra');
 const cheerio = require('cheerio');
 
@@ -18,6 +20,8 @@ jest.mock('../src/extractors/imageExtractor');
 jest.mock('../src/utils/downloadChecker');
 jest.mock('../src/utils/concurrentDownloader');
 jest.mock('../src/utils/browserClient');
+jest.mock('../src/utils/completedProfilesRegistry');
+jest.mock('../src/utils/profileFileManager');
 jest.mock('fs-extra');
 jest.mock('cheerio');
 
@@ -83,6 +87,26 @@ describe('KemonoDownloader', () => {
       })
     };
     ConcurrentDownloader.mockImplementation(() => mockConcurrentDownloader);
+
+    // Mock CompletedProfilesRegistry
+    CompletedProfilesRegistry.mockImplementation(() => ({
+      load: jest.fn().mockResolvedValue(),
+      isCompleted: jest.fn().mockReturnValue(false),
+      markCompleted: jest.fn().mockResolvedValue(),
+      getAll: jest.fn().mockResolvedValue([])
+    }));
+
+    // Mock ProfileFileManager
+    ProfileFileManager.mockImplementation(() => ({
+      readProfiles: jest.fn().mockResolvedValue([]),
+      commentProfile: jest.fn().mockResolvedValue(),
+      getStatistics: jest.fn().mockResolvedValue({ total: 0, active: 0, completed: 0 })
+    }));
+
+    // fs mocks needed for _finalizeProfile
+    fs.ensureDir.mockResolvedValue();
+    fs.pathExists.mockResolvedValue(true);
+    fs.move.mockResolvedValue();
 
     // Mock console.log and console.error to reduce test noise
     jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -459,48 +483,95 @@ describe('KemonoDownloader', () => {
       const mockPosts = [
         { id: '1', url: 'https://kemono.cr/patreon/user/123/post/1', username: 'user1' }
       ];
-      
-      readProfilesFile.mockResolvedValue(profileUrls);
+
+      ProfileFileManager.mockImplementation(() => ({
+        readProfiles: jest.fn().mockResolvedValue(profileUrls),
+        commentProfile: jest.fn().mockResolvedValue(),
+        getStatistics: jest.fn().mockResolvedValue({ total: 2, active: 2, completed: 0 })
+      }));
+      downloader = new KemonoDownloader();
       downloader.getProfilePosts = jest.fn().mockResolvedValue(mockPosts);
       downloader.downloadPost = jest.fn().mockResolvedValue();
-      
+
       await downloader.processProfilesFile('profiles.txt');
-      
-      expect(readProfilesFile).toHaveBeenCalledWith('profiles.txt');
+
       expect(downloader.getProfilePosts).toHaveBeenCalledTimes(2);
-      expect(downloader.downloadPost).toHaveBeenCalledTimes(2); // 1 post from each profile
+      expect(downloader.downloadPost).toHaveBeenCalledTimes(2);
       expect(downloader.stats.profilesProcessed).toBe(2);
     });
 
     test('should handle profiles with no posts', async () => {
       const profileUrls = ['https://kemono.cr/patreon/user/123'];
-      
-      readProfilesFile.mockResolvedValue(profileUrls);
+
+      ProfileFileManager.mockImplementation(() => ({
+        readProfiles: jest.fn().mockResolvedValue(profileUrls),
+        commentProfile: jest.fn().mockResolvedValue(),
+        getStatistics: jest.fn().mockResolvedValue({ total: 1, active: 1, completed: 0 })
+      }));
+      downloader = new KemonoDownloader();
       downloader.getProfilePosts = jest.fn().mockResolvedValue([]);
-      
+
       await downloader.processProfilesFile('profiles.txt');
-      
+
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('No posts found'));
       expect(downloader.stats.profilesProcessed).toBe(1);
     });
 
     test('should handle profile processing errors', async () => {
       const profileUrls = ['https://kemono.cr/patreon/user/123'];
-      
-      readProfilesFile.mockResolvedValue(profileUrls);
+
+      ProfileFileManager.mockImplementation(() => ({
+        readProfiles: jest.fn().mockResolvedValue(profileUrls),
+        commentProfile: jest.fn().mockResolvedValue(),
+        getStatistics: jest.fn().mockResolvedValue({ total: 1, active: 1, completed: 0 })
+      }));
+      downloader = new KemonoDownloader();
       downloader.getProfilePosts = jest.fn().mockRejectedValue(new Error('Profile error'));
-      
+
       await downloader.processProfilesFile('profiles.txt');
-      
+
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Error processing profile'));
       expect(downloader.stats.errors).toBe(1);
     });
 
+    test('should skip profiles already in completed registry', async () => {
+      const profileUrls = ['https://kemono.cr/patreon/user/123'];
+
+      CompletedProfilesRegistry.mockImplementation(() => ({
+        load: jest.fn().mockResolvedValue(),
+        isCompleted: jest.fn().mockReturnValue(true),
+        markCompleted: jest.fn().mockResolvedValue(),
+        getAll: jest.fn().mockResolvedValue([{
+          profileUrl: profileUrls[0], username: 'user1',
+          totalPosts: 10, totalImages: 50, completedAt: '2026-01-01T00:00:00.000Z'
+        }])
+      }));
+      ProfileFileManager.mockImplementation(() => ({
+        readProfiles: jest.fn().mockResolvedValue(profileUrls),
+        commentProfile: jest.fn().mockResolvedValue(),
+        getStatistics: jest.fn().mockResolvedValue({ total: 1, active: 1, completed: 0 })
+      }));
+      config.shouldForceRedownload.mockReturnValue(false);
+      downloader = new KemonoDownloader();
+      downloader.getProfilePosts = jest.fn();
+
+      await downloader.processProfilesFile('profiles.txt');
+
+      expect(downloader.getProfilePosts).not.toHaveBeenCalled();
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('completed registry'));
+      expect(downloader.stats.profilesProcessed).toBe(1);
+    });
+
     test('should handle file reading errors', async () => {
-      readProfilesFile.mockRejectedValue(new Error('File read error'));
-      
+      ProfileFileManager.mockImplementation(() => ({
+        readProfiles: jest.fn().mockRejectedValue(new Error('File read error')),
+        commentProfile: jest.fn().mockResolvedValue(),
+        getStatistics: jest.fn().mockResolvedValue({ total: 0, active: 0, completed: 0 })
+      }));
+      downloader = new KemonoDownloader();
+
       await downloader.processProfilesFile('nonexistent.txt');
-      
+
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Error processing profiles file'));
       expect(downloader.stats.errors).toBe(1);
     });

@@ -17,10 +17,15 @@ const { downloadMegaLink, formatBytes } = require('./utils/megaDownloader');
 const { downloadGoogleDriveLink, formatBytes: formatBytesGDrive } = require('./utils/googleDriveDownloader');
 const { downloadDropboxLink, formatBytes: formatBytesDropbox } = require('./utils/dropboxDownloader');
 const ProfileStateManager = require('./utils/profileStateManager');
+const CompletedProfilesRegistry = require('./utils/completedProfilesRegistry');
+const ProfileFileManager = require('./utils/profileFileManager');
 
 class KemonoDownloader {
   constructor() {
     this.baseDir = config.getBaseDirectory();
+    this.inProgressDir = path.join(this.baseDir, 'in-progress');
+    this.completedDir = path.join(this.baseDir, 'completed');
+    this.registry = new CompletedProfilesRegistry(path.join(this.baseDir, 'completed-profiles.json'));
     this.concurrentDownloader = new ConcurrentDownloader();
     this.stats = {
       profilesProcessed: 0,
@@ -34,6 +39,10 @@ class KemonoDownloader {
   async initialize() {
     await config.load();
     this.baseDir = config.getBaseDirectory();
+    this.inProgressDir = path.join(this.baseDir, 'in-progress');
+    this.completedDir = path.join(this.baseDir, 'completed');
+    this.registry = new CompletedProfilesRegistry(path.join(this.baseDir, 'completed-profiles.json'));
+    await this.registry.load();
     this.htmlOnlyMode = config.get('htmlOnlyMode', false);
     console.log(`📁 Base directory: ${this.baseDir}`);
     console.log(`⚡ Max concurrent images: ${config.getMaxConcurrentImages()}`);
@@ -209,7 +218,7 @@ class KemonoDownloader {
     console.log(`\n📄 [${postIndex + 1}/${totalPosts}] Processing post: ${post.id}`);
     console.log(`  🔗 URL: ${post.url}`);
 
-    const postDir = path.join(this.baseDir, post.username, post.id);
+    const postDir = path.join(this.inProgressDir, post.username, post.id);
 
     // First, check if we should skip this post
     const quickCheck = await getDownloadStatus(postDir);
@@ -439,50 +448,54 @@ class KemonoDownloader {
   async processProfilesFile(filename) {
     try {
       console.log(`📂 Reading profiles from: ${filename}`);
-      const profileUrls = await readProfilesFile(filename);
+      const profileFileManager = new ProfileFileManager(filename);
+      const profileUrls = await profileFileManager.readProfiles();
 
-      // Initialize ProfileStateManager for per-profile state tracking
-      const stateManager = new ProfileStateManager(this.baseDir);
+      // Initialize ProfileStateManager for writing per-profile .download-state.json
+      const stateManager = new ProfileStateManager(this.inProgressDir);
 
-      // Show statistics from existing downloads
-      const stats = await stateManager.getStatistics();
-      console.log(`📋 Found ${profileUrls.length} profile URLs to process\n`);
-      if (stats.completedProfiles > 0) {
-        console.log(`✅ ${stats.completedProfiles} profile(s) already completed (found in download folders)`);
-        console.log(`📊 Total: ${stats.totalPosts} posts, ${stats.totalImages} images downloaded\n`);
-      }
+      // Show registry stats
+      const registryEntries = await this.registry.getAll();
+      const fileStats = await profileFileManager.getStatistics();
+      console.log(`📋 Found ${profileUrls.length} active profile URLs to process`);
+      console.log(`✅ ${registryEntries.length} profile(s) in completed registry`);
+      console.log(`📝 ${fileStats.completed} profile(s) commented out in profiles.txt\n`);
 
       for (let i = 0; i < profileUrls.length; i++) {
         const profileUrl = profileUrls[i];
         console.log(`\n🔄 [${i + 1}/${profileUrls.length}] Processing profile: ${profileUrl}`);
 
         try {
+          // Skip profiles already in the completed registry BEFORE fetching posts.
+          // URL is the stable key — works even after moving the folder to an external drive.
+          if (!config.shouldForceRedownload() && this.registry.isCompleted(profileUrl)) {
+            const entry = (await this.registry.getAll()).find(e => e.profileUrl === profileUrl);
+            console.log(`  ⏭️  Skipping: Profile found in completed registry`);
+            if (entry) {
+              console.log(`     Completed: ${entry.completedAt}`);
+              console.log(`     Downloaded: ${entry.totalPosts} posts, ${entry.totalImages} images`);
+            }
+            this.stats.profilesProcessed++;
+            continue;
+          }
+
           const userInfo = extractUserInfo(profileUrl);
           const posts = await this.getProfilePosts(profileUrl);
 
           // Get username from first post or use fallback
           const username = posts.length > 0 ? posts[0].username : `${userInfo.service}_${userInfo.userId}`;
 
-          // Check if profile already completed (unless force redownload)
-          if (!config.shouldForceRedownload() && await stateManager.isProfileCompleted(username)) {
-            const state = await stateManager.getProfileState(username);
-            console.log(`  ⏭️  Skipping: Profile already completed`);
-            console.log(`     Completed: ${state.completedAt}`);
-            console.log(`     Downloaded: ${state.totalPosts} posts, ${state.totalImages} images`);
-            this.stats.profilesProcessed++;
-            continue;
-          }
-
           if (posts.length === 0) {
             console.log(`  ⚠️  No posts found for this profile`);
-            // Mark as completed with 0 posts
+            const completedAt = new Date().toISOString();
             await stateManager.markCompleted(username, {
-              profileUrl,
-              service: userInfo.service,
-              userId: userInfo.userId,
-              totalPosts: 0,
-              totalImages: 0,
-              totalErrors: this.stats.errors
+              profileUrl, service: userInfo.service, userId: userInfo.userId,
+              totalPosts: 0, totalImages: 0, totalErrors: this.stats.errors
+            });
+            await this._finalizeProfile(username, profileUrl, {
+              service: userInfo.service, userId: userInfo.userId,
+              totalPosts: 0, totalImages: 0, completedAt,
+              profileFileManager
             });
             this.stats.profilesProcessed++;
             console.log(`  ✅ Profile completed`);
@@ -509,14 +522,19 @@ class KemonoDownloader {
           const profileImages = this.stats.imagesDownloaded - initialImages;
           const profileErrors = this.stats.errors - initialErrors;
 
-          // Mark profile as completed in download folder
+          const completedAt = new Date().toISOString();
+
+          // Write .download-state.json into in-progress folder (before move)
           await stateManager.markCompleted(username, {
-            profileUrl,
-            service: userInfo.service,
-            userId: userInfo.userId,
-            totalPosts: posts.length,
-            totalImages: profileImages,
-            totalErrors: profileErrors
+            profileUrl, service: userInfo.service, userId: userInfo.userId,
+            totalPosts: posts.length, totalImages: profileImages, totalErrors: profileErrors
+          });
+
+          // Move folder, update registry, comment profiles.txt
+          await this._finalizeProfile(username, profileUrl, {
+            service: userInfo.service, userId: userInfo.userId,
+            totalPosts: posts.length, totalImages: profileImages, completedAt,
+            profileFileManager
           });
 
           this.stats.profilesProcessed++;
@@ -533,6 +551,35 @@ class KemonoDownloader {
       this.stats.errors++;
       console.error(`❌ Error processing profiles file: ${error.message}`);
     }
+  }
+
+  /**
+   * Move profile folder from in-progress/ to completed/, update the registry,
+   * and comment out the URL in profiles.txt.
+   */
+  async _finalizeProfile(username, profileUrl, { service, userId, totalPosts, totalImages, completedAt, profileFileManager }) {
+    // Move folder: in-progress/username → completed/username
+    const srcDir  = path.join(this.inProgressDir, username);
+    const destDir = path.join(this.completedDir, username);
+    try {
+      await fs.ensureDir(this.completedDir);
+      if (await fs.pathExists(srcDir)) {
+        if (await fs.pathExists(destDir)) {
+          console.log(`  ⚠️  Destination already exists, skipping move: completed/${username}`);
+        } else {
+          await fs.move(srcDir, destDir);
+          console.log(`  📦 Moved to completed/: ${username}`);
+        }
+      }
+    } catch (error) {
+      console.warn(`  ⚠️  Failed to move profile folder: ${error.message}`);
+    }
+
+    // Update the flat registry (stays on disk even when folder is moved externally)
+    await this.registry.markCompleted({ profileUrl, username, service, userId, totalPosts, totalImages, completedAt });
+
+    // Comment out the URL in profiles.txt
+    await profileFileManager.commentProfile(profileUrl, { postCount: totalPosts, timestamp: completedAt });
   }
 
   async verifyPostImages(postDir, expectedImages, postId) {
