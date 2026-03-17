@@ -46,8 +46,24 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
         }
       }
 
+      const shouldDeleteFile = error.message.includes('Size mismatch') ||
+                               error.message.includes('File size mismatch') ||
+                               error.message.includes('truncated') ||
+                               error.message.includes('connection lost') ||
+                               error.message.includes('Download interrupted');
+
       if (attempt === retryAttempts) {
-        // Final attempt failed
+        // Final attempt failed — clean up any corrupt/partial file before throwing
+        if (shouldDeleteFile) {
+          try {
+            if (await fs.pathExists(filepath)) {
+              await fs.remove(filepath);
+              if (onProgress) onProgress(`🗑️  Deleted incomplete file: ${path.basename(filepath)}`);
+            }
+          } catch (deleteError) {
+            if (onProgress) onProgress(`⚠️  Failed to delete incomplete file: ${deleteError.message}`);
+          }
+        }
         throw lastError;
       } else {
         // Check if we should retry based on error type
@@ -56,14 +72,11 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
                            error.response?.status === 403 ||
                            error.code === 'ECONNABORTED' ||
                            error.message.includes('timeout') ||
-                           error.message.includes('connection lost') ||
-                           error.message.includes('Download interrupted') ||
-                           error.message.includes('Size mismatch') ||
-                           error.message.includes('File size mismatch');
+                           shouldDeleteFile;
 
         if (shouldRetry) {
-          // Delete incomplete file before retrying
-          if (error.message.includes('Size mismatch') || error.message.includes('File size mismatch')) {
+          // Delete incomplete/corrupt file before retrying
+          if (shouldDeleteFile) {
             try {
               if (await fs.pathExists(filepath)) {
                 await fs.remove(filepath);
