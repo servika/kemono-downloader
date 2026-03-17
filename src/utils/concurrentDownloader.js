@@ -111,7 +111,20 @@ class ConcurrentDownloader {
       const imageName = getImageName(imageInfo, index);
       const imagePath = path.join(postDir, imageName);
 
-      // Check if file already exists
+      // Check if file already exists (also check same stem with different ext for .bin files)
+      if (!(await fs.pathExists(imagePath)) && imageName.toLowerCase().endsWith('.bin')) {
+        const stem = path.basename(imageName, '.bin');
+        const files = await fs.readdir(postDir).catch(() => []);
+        const existing = files.find(f => path.basename(f, path.extname(f)) === stem && f !== imageName);
+        if (existing) {
+          this.stats.skipped++;
+          if (config.shouldShowSkippedFiles()) {
+            onProgress(`⏭️  [${this.activeSemaphore}/${this.maxConcurrent}] Already downloaded as: ${existing}`);
+          }
+          return;
+        }
+      }
+
       if (await fs.pathExists(imagePath)) {
         try {
           const stats = await fs.stat(imagePath);
@@ -183,14 +196,15 @@ class ConcurrentDownloader {
       onProgress(`📥 [${this.activeSemaphore}/${this.maxConcurrent}] Downloading: ${imageName}`);
 
       try {
-        await downloadImageWithRetry(imageUrl, imagePath, (msg) => {
+        const result = await downloadImageWithRetry(imageUrl, imagePath, (msg) => {
           if (config.shouldShowVerboseProgress()) {
             onProgress(`    ${msg}`);
           }
         }, thumbnailUrl); // Pass thumbnail URL for fallback
 
+        const actualName = result?.filepath ? path.basename(result.filepath) : imageName;
         this.stats.completed++;
-        onProgress(`✅ [${this.stats.completed}/${this.stats.completed + this.stats.failed + this.stats.skipped}] Downloaded: ${imageName}`);
+        onProgress(`✅ [${this.stats.completed}/${this.stats.completed + this.stats.failed + this.stats.skipped}] Downloaded: ${actualName}`);
 
         // Add delay between downloads to be respectful
         const imageDelay = config.getImageDelay();

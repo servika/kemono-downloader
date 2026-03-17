@@ -241,7 +241,9 @@ function isDocumentUrl(url) {
     // Font files
     '.ttf', '.otf', '.woff', '.woff2',
     // Other common creator files
-    '.swf', '.exe', '.apk', '.dmg'
+    '.swf', '.exe', '.apk', '.dmg',
+    // Generic binary (kemono.cr CDN stores some files with .bin regardless of actual type)
+    '.bin'
   ];
   const urlLower = url.toLowerCase();
   return documentExtensions.some(ext => urlLower.includes(ext));
@@ -293,27 +295,58 @@ function isDownloadableUrl(url) {
  * getImageName('invalid-url', 5)                      // 'image_6.jpg'
  */
 function getImageName(imageInfo, index) {
+  const path = require('path');
   try {
     // If imageInfo is an object with filename, use that
     if (typeof imageInfo === 'object' && imageInfo.filename) {
-      // Clean the filename to be filesystem-safe
-      return sanitizeFilename(imageInfo.filename);
+      const filename = sanitizeFilename(imageInfo.filename);
+      // If filename has .bin extension, try to resolve the real extension
+      // kemono.cr CDN sometimes stores files as .bin regardless of actual type
+      if (filename.toLowerCase().endsWith('.bin')) {
+        // Case 1: double extension like artwork.psd.bin → strip .bin to get artwork.psd
+        const withoutBin = filename.slice(0, -4);
+        const hiddenExt = path.extname(withoutBin).toLowerCase();
+        if (hiddenExt && hiddenExt !== '.bin') {
+          return sanitizeFilename(withoutBin);
+        }
+
+        // Case 2: URL has real extension info
+        if (imageInfo.url) {
+          try {
+            const urlPathname = new URL(imageInfo.url).pathname;
+            // Double extension in URL: /data/artwork.psd.bin → use .psd
+            if (urlPathname.toLowerCase().endsWith('.bin')) {
+              const urlWithoutBin = urlPathname.slice(0, -4);
+              const urlHiddenExt = path.extname(urlWithoutBin).toLowerCase();
+              if (urlHiddenExt && urlHiddenExt !== '.bin') {
+                return sanitizeFilename(path.basename(filename, '.bin') + urlHiddenExt);
+              }
+            }
+            // URL has a simple different extension
+            const urlExt = path.extname(urlPathname).toLowerCase();
+            if (urlExt && urlExt !== '.bin') {
+              return path.basename(filename, path.extname(filename)) + urlExt;
+            }
+          } catch {}
+        }
+      }
+      return filename;
     }
-    
+
     // If imageInfo is an object with URL, extract from URL
     const imageUrl = typeof imageInfo === 'object' ? imageInfo.url : imageInfo;
-    
+
     const url = new URL(imageUrl);
     const pathname = url.pathname;
-    const filename = require('path').basename(pathname);
-    
+    const filename = path.basename(pathname);
+
     if (filename && filename.includes('.')) {
       return sanitizeFilename(filename);
     }
   } catch (error) {
     // If URL parsing fails, generate a name
   }
-  
+
   return `image_${index + 1}.jpg`;
 }
 

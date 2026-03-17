@@ -10,6 +10,63 @@ const { getImageName } = require('./urlUtils');
  * File and download utilities for images, videos, and archives
  */
 
+// Maps Content-Type MIME types to file extensions for .bin detection
+const CONTENT_TYPE_EXT_MAP = {
+  'image/vnd.adobe.photoshop': '.psd',
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/bmp': '.bmp',
+  'image/tiff': '.tiff',
+  'image/svg+xml': '.svg',
+  'image/avif': '.avif',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+  'audio/mpeg': '.mp3',
+  'audio/flac': '.flac',
+  'audio/wav': '.wav',
+  'audio/ogg': '.ogg',
+  'application/zip': '.zip',
+  'application/x-rar-compressed': '.rar',
+  'application/vnd.rar': '.rar',
+  'application/x-7z-compressed': '.7z',
+  'application/pdf': '.pdf',
+};
+
+/**
+ * Detects file type from magic bytes (file signature).
+ * Used as a last resort when Content-Type is application/octet-stream.
+ * @param {Buffer} buf - First bytes of the file
+ * @returns {string|null} Extension including dot, or null if unknown
+ */
+function detectMagicExtension(buf) {
+  if (!buf || buf.length < 4) return null;
+  // PSD: "8BPS"
+  if (buf[0] === 0x38 && buf[1] === 0x42 && buf[2] === 0x50 && buf[3] === 0x53) return '.psd';
+  // PNG
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return '.png';
+  // JPEG
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return '.jpg';
+  // GIF
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return '.gif';
+  // WebP: RIFF....WEBP
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf.length >= 12 && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return '.webp';
+  // PDF
+  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return '.pdf';
+  // ZIP / CLIP Studio Paint / many Office formats
+  if (buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04) return '.zip';
+  // RAR
+  if (buf[0] === 0x52 && buf[1] === 0x61 && buf[2] === 0x72 && buf[3] === 0x21) return '.rar';
+  // 7-Zip
+  if (buf[0] === 0x37 && buf[1] === 0x7A && buf[2] === 0xBC && buf[3] === 0xAF) return '.7z';
+  // MP4 / MOV: ftyp box at offset 4
+  if (buf.length >= 8 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return '.mp4';
+  return null;
+}
+
 async function downloadMedia(mediaUrl, filepath, onProgress) {
   // Use the same download logic for both images and videos
   return downloadImage(mediaUrl, filepath, onProgress);
@@ -28,8 +85,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
   // Try downloading full resolution first
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
     try {
-      await downloadImage(imageUrl, filepath, onProgress);
-      return; // Success, exit retry loop
+      const result = await downloadImage(imageUrl, filepath, onProgress);
+      return result; // Success, exit retry loop - result includes actual filepath
     } catch (error) {
       lastError = error;
 
@@ -122,8 +179,37 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       }
     });
 
-    await fs.ensureDir(path.dirname(filepath));
-    const writer = fs.createWriteStream(filepath);
+    // For .bin files, try to determine the real extension from response headers
+    // kemono.cr CDN stores many file types (PSD, CLIP, etc.) with .bin extension
+    const state = { filepath };
+    if (path.extname(filepath).toLowerCase() === '.bin') {
+      // 1. Check Content-Disposition header for the real filename
+      const disposition = response.headers['content-disposition'];
+      if (disposition) {
+        const match = /filename[^;=\n]*=\s*["']?([^"';\n\r]+)["']?/i.exec(disposition);
+        if (match) {
+          const dispName = match[1].trim().replace(/["']/g, '');
+          const dispExt = path.extname(dispName).toLowerCase();
+          if (dispExt && dispExt !== '.bin') {
+            state.filepath = path.join(path.dirname(filepath), path.basename(filepath, '.bin') + dispExt);
+          }
+        }
+      }
+      // 2. Check Content-Type header
+      if (state.filepath === filepath) {
+        const contentType = (response.headers['content-type'] || '').toLowerCase().split(';')[0].trim();
+        const detectedExt = CONTENT_TYPE_EXT_MAP[contentType];
+        if (detectedExt) {
+          state.filepath = path.join(path.dirname(filepath), path.basename(filepath, '.bin') + detectedExt);
+        }
+      }
+      if (state.filepath !== filepath && onProgress) {
+        onProgress(`🔍 Detected real type: ${path.basename(filepath)} → ${path.basename(state.filepath)}`);
+      }
+    }
+
+    await fs.ensureDir(path.dirname(state.filepath));
+    const writer = fs.createWriteStream(state.filepath);
 
     // Get file size from headers for progress tracking
     const expectedSize = parseInt(response.headers['content-length']) || 0;
@@ -132,6 +218,8 @@ async function downloadImage(imageUrl, filepath, onProgress) {
     const progressInterval = 1000; // Update progress every 1 second
     // Rolling buffer of last 8 bytes for EOF marker verification
     let streamTail = Buffer.alloc(0);
+    // First bytes buffer for magic byte detection (used when Content-Type is ambiguous)
+    let streamHead = null;
 
     return new Promise((resolve, reject) => {
       let isResolved = false;
@@ -192,7 +280,7 @@ async function downloadImage(imageUrl, filepath, onProgress) {
           const percentage = Math.round((downloadedSize / expectedSize) * 100);
           const downloadedFormatted = formatBytes(downloadedSize);
           const totalFormatted = formatBytes(expectedSize);
-          const filename = path.basename(filepath);
+          const filename = path.basename(state.filepath);
 
           // Show progress for all files with known size
           const isVideoFile = /\.(mp4|avi|mov|wmv|flv|webm|mkv)$/i.test(filename);
@@ -223,6 +311,8 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       response.data.on('data', (chunk) => {
         downloadedSize += chunk.length;
         lastDataTime = Date.now(); // Update last data time for timeout management
+        // Capture first bytes for magic byte detection
+        if (!streamHead) streamHead = chunk.slice(0, 16);
         // Keep rolling last-8-bytes buffer for EOF verification
         const combined = Buffer.concat([streamTail, chunk]);
         streamTail = combined.slice(Math.max(0, combined.length - 8));
@@ -239,17 +329,17 @@ async function downloadImage(imageUrl, filepath, onProgress) {
         // Verify file size matches expected size
         if (expectedSize > 0 && downloadedSize !== expectedSize) {
           const errorMsg = `Size mismatch: expected ${formatBytes(expectedSize)}, got ${formatBytes(downloadedSize)}`;
-          if (onProgress) onProgress(`⚠️  ${path.basename(filepath)}: ${errorMsg}`);
+          if (onProgress) onProgress(`⚠️  ${path.basename(state.filepath)}: ${errorMsg}`);
           rejectOnce(new Error(errorMsg));
           return;
         }
 
         // Verify actual file size on disk
         try {
-          const stats = await fs.stat(filepath);
+          const stats = await fs.stat(state.filepath);
           if (expectedSize > 0 && stats.size !== expectedSize) {
             const errorMsg = `File size mismatch: expected ${formatBytes(expectedSize)}, file on disk is ${formatBytes(stats.size)}`;
-            if (onProgress) onProgress(`⚠️  ${path.basename(filepath)}: ${errorMsg}`);
+            if (onProgress) onProgress(`⚠️  ${path.basename(state.filepath)}: ${errorMsg}`);
             rejectOnce(new Error(errorMsg));
             return;
           }
@@ -257,21 +347,39 @@ async function downloadImage(imageUrl, filepath, onProgress) {
           // Verify image EOF markers to detect partial/truncated downloads
           // Only applies to image files large enough to be valid (>= 128 bytes)
           if (downloadedSize >= 128) {
-            const eofCheck = checkStreamedEofMarkers(filepath, streamTail);
+            const eofCheck = checkStreamedEofMarkers(state.filepath, streamTail);
             if (!eofCheck.valid) {
-              if (onProgress) onProgress(`⚠️  ${path.basename(filepath)}: ${eofCheck.reason}`);
+              if (onProgress) onProgress(`⚠️  ${path.basename(state.filepath)}: ${eofCheck.reason}`);
               rejectOnce(new Error(`Size mismatch: ${eofCheck.reason}`));
               return;
             }
           }
 
-          if (onProgress) onProgress(`✅ Downloaded: ${path.basename(filepath)} (${formatBytes(downloadedSize)})`);
+          // If still .bin after header detection, try magic bytes as last resort
+          if (path.extname(state.filepath).toLowerCase() === '.bin' && streamHead) {
+            const magicExt = detectMagicExtension(streamHead);
+            if (magicExt) {
+              const renamedPath = path.join(
+                path.dirname(state.filepath),
+                path.basename(state.filepath, '.bin') + magicExt
+              );
+              try {
+                await fs.rename(state.filepath, renamedPath);
+                if (onProgress) onProgress(`🔍 Detected real type via magic bytes: ${path.basename(state.filepath)} → ${path.basename(renamedPath)}`);
+                state.filepath = renamedPath;
+              } catch {
+                // Rename failed, keep as .bin
+              }
+            }
+          }
+
+          if (onProgress) onProgress(`✅ Downloaded: ${path.basename(state.filepath)} (${formatBytes(downloadedSize)})`);
 
           // Return size information for verification
           const result = {
             expectedSize,
             actualSize: downloadedSize,
-            filepath
+            filepath: state.filepath
           };
 
           // For videos, add a small delay to ensure file is fully written
@@ -286,7 +394,7 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       });
 
       writer.on('error', (error) => {
-        if (onProgress) onProgress(`❌ Failed to save: ${path.basename(filepath)} - ${error.message}`);
+        if (onProgress) onProgress(`❌ Failed to save: ${path.basename(state.filepath)} - ${error.message}`);
         rejectOnce(error);
       });
 
