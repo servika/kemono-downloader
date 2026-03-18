@@ -36,6 +36,50 @@ const CONTENT_TYPE_EXT_MAP = {
 };
 
 /**
+ * Validates the PSD/PSB file header structure.
+ * Header layout (26 bytes): magic(4) + version(2) + reserved(6) + channels(2) + height(4) + width(4) + bitDepth(2) + colorMode(2)
+ * @param {Buffer} head - First bytes of the file (need ≥26 bytes)
+ * @returns {{ valid: boolean, reason?: string }}
+ */
+function validatePsdHeader(head) {
+  if (!head || head.length < 26) {
+    return { valid: false, reason: 'PSD file too small to contain a valid header (need ≥26 bytes)' };
+  }
+  // Magic: "8BPS"
+  if (head[0] !== 0x38 || head[1] !== 0x42 || head[2] !== 0x50 || head[3] !== 0x53) {
+    return { valid: false, reason: 'PSD missing "8BPS" magic bytes — not a valid PSD/PSB file' };
+  }
+  // Version: 1 = PSD, 2 = PSB (large document format)
+  const version = head.readUInt16BE(4);
+  if (version !== 1 && version !== 2) {
+    return { valid: false, reason: `PSD invalid version ${version} — expected 1 (PSD) or 2 (PSB)` };
+  }
+  // Reserved bytes 6–11 must be zero
+  for (let i = 6; i <= 11; i++) {
+    if (head[i] !== 0) {
+      return { valid: false, reason: 'PSD header reserved bytes are non-zero — file is corrupt' };
+    }
+  }
+  // Channels: 1–56
+  const channels = head.readUInt16BE(12);
+  if (channels < 1 || channels > 56) {
+    return { valid: false, reason: `PSD invalid channel count ${channels} — expected 1–56` };
+  }
+  // Height and width must be positive
+  const height = head.readUInt32BE(14);
+  const width = head.readUInt32BE(18);
+  if (height === 0 || width === 0) {
+    return { valid: false, reason: 'PSD has zero width or height — file is corrupt' };
+  }
+  // Bit depth: 1, 8, 16, or 32
+  const bitDepth = head.readUInt16BE(22);
+  if (![1, 8, 16, 32].includes(bitDepth)) {
+    return { valid: false, reason: `PSD invalid bit depth ${bitDepth} — expected 1, 8, 16, or 32` };
+  }
+  return { valid: true };
+}
+
+/**
  * Detects file type from magic bytes (file signature).
  * Used as a last resort when Content-Type is application/octet-stream.
  * @param {Buffer} buf - First bytes of the file
@@ -311,8 +355,11 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       response.data.on('data', (chunk) => {
         downloadedSize += chunk.length;
         lastDataTime = Date.now(); // Update last data time for timeout management
-        // Capture first bytes for magic byte detection
-        if (!streamHead) streamHead = chunk.slice(0, 16);
+        // Capture first 32 bytes for magic byte detection and PSD header validation
+        if (!streamHead || streamHead.length < 32) {
+          const combined = streamHead ? Buffer.concat([streamHead, chunk]) : chunk;
+          streamHead = combined.slice(0, 32);
+        }
         // Keep rolling last-8-bytes buffer for EOF verification
         const combined = Buffer.concat([streamTail, chunk]);
         streamTail = combined.slice(Math.max(0, combined.length - 8));
@@ -352,6 +399,27 @@ async function downloadImage(imageUrl, filepath, onProgress) {
               if (onProgress) onProgress(`⚠️  ${path.basename(state.filepath)}: ${eofCheck.reason}`);
               rejectOnce(new Error(`Size mismatch: ${eofCheck.reason}`));
               return;
+            }
+          }
+
+          // PSD/PSB-specific validation
+          const psdExt = path.extname(state.filepath).toLowerCase();
+          if (psdExt === '.psd' || psdExt === '.psb') {
+            // Without content-length we cannot verify the download is complete
+            if (expectedSize === 0) {
+              const errorMsg = 'PSD downloaded without content-length — cannot verify completeness';
+              if (onProgress) onProgress(`⚠️  ${path.basename(state.filepath)}: ${errorMsg}`);
+              rejectOnce(new Error(`truncated: ${errorMsg}`));
+              return;
+            }
+            // Validate PSD header structure using the first captured bytes
+            if (streamHead) {
+              const psdCheck = validatePsdHeader(streamHead);
+              if (!psdCheck.valid) {
+                if (onProgress) onProgress(`⚠️  ${path.basename(state.filepath)}: ${psdCheck.reason}`);
+                rejectOnce(new Error(`truncated: ${psdCheck.reason}`));
+                return;
+              }
             }
           }
 
@@ -745,6 +813,7 @@ module.exports = {
   downloadMedia,
   downloadMediaWithRetry,
   checkImageIntegrity,
+  validatePsdHeader,
   savePostMetadata,
   saveHtmlContent,
   readProfilesFile,

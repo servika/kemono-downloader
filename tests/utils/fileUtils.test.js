@@ -5,7 +5,8 @@ const {
   downloadMediaWithRetry,
   savePostMetadata,
   saveHtmlContent,
-  readProfilesFile
+  readProfilesFile,
+  validatePsdHeader
 } = require('../../src/utils/fileUtils');
 const axios = require('axios');
 const fs = require('fs-extra');
@@ -588,6 +589,198 @@ describe('fileUtils', () => {
         '/test/post/post.html',
         html
       );
+    });
+  });
+
+  // Helper: build a valid 32-byte PSD header buffer
+  function makePsdHeader({ magic = true, version = 1, reservedZero = true, channels = 3, height = 100, width = 100, bitDepth = 8, colorMode = 3 } = {}) {
+    const buf = Buffer.alloc(32);
+    if (magic) { buf[0] = 0x38; buf[1] = 0x42; buf[2] = 0x50; buf[3] = 0x53; }
+    buf.writeUInt16BE(version, 4);
+    if (!reservedZero) buf[6] = 0xFF;
+    buf.writeUInt16BE(channels, 12);
+    buf.writeUInt32BE(height, 14);
+    buf.writeUInt32BE(width, 18);
+    buf.writeUInt16BE(bitDepth, 22);
+    buf.writeUInt16BE(colorMode, 24);
+    return buf;
+  }
+
+  describe('validatePsdHeader', () => {
+    test('accepts a valid PSD header (version 1)', () => {
+      expect(validatePsdHeader(makePsdHeader())).toEqual({ valid: true });
+    });
+
+    test('accepts a valid PSB header (version 2)', () => {
+      expect(validatePsdHeader(makePsdHeader({ version: 2 }))).toEqual({ valid: true });
+    });
+
+    test('accepts bit depths 1, 8, 16, 32', () => {
+      for (const bitDepth of [1, 8, 16, 32]) {
+        expect(validatePsdHeader(makePsdHeader({ bitDepth }))).toEqual({ valid: true });
+      }
+    });
+
+    test('rejects null / too-short buffer', () => {
+      expect(validatePsdHeader(null).valid).toBe(false);
+      expect(validatePsdHeader(Buffer.alloc(10)).valid).toBe(false);
+      expect(validatePsdHeader(null).reason).toMatch(/too small/);
+    });
+
+    test('rejects missing magic bytes', () => {
+      const result = validatePsdHeader(makePsdHeader({ magic: false }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/magic bytes/);
+    });
+
+    test('rejects invalid version', () => {
+      const result = validatePsdHeader(makePsdHeader({ version: 0 }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/version/);
+    });
+
+    test('rejects non-zero reserved bytes', () => {
+      const result = validatePsdHeader(makePsdHeader({ reservedZero: false }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/reserved/);
+    });
+
+    test('rejects channel count 0', () => {
+      const result = validatePsdHeader(makePsdHeader({ channels: 0 }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/channel/);
+    });
+
+    test('rejects channel count 57', () => {
+      const result = validatePsdHeader(makePsdHeader({ channels: 57 }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/channel/);
+    });
+
+    test('rejects zero height', () => {
+      const result = validatePsdHeader(makePsdHeader({ height: 0 }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/zero/);
+    });
+
+    test('rejects zero width', () => {
+      const result = validatePsdHeader(makePsdHeader({ width: 0 }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/zero/);
+    });
+
+    test('rejects invalid bit depth', () => {
+      const result = validatePsdHeader(makePsdHeader({ bitDepth: 24 }));
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/bit depth/);
+    });
+  });
+
+  describe('PSD download validation', () => {
+    // Helper: build a 512-byte buffer starting with a valid PSD header
+    function makePsdData(size = 512) {
+      const buf = Buffer.alloc(size);
+      buf.set(makePsdHeader());
+      return buf;
+    }
+
+    test('should accept a PSD download with valid header and content-length', async () => {
+      const psdData = makePsdData();
+      const mockStream = Readable.from([psdData]);
+      const mockResponse = { data: mockStream, headers: { 'content-length': '512' } };
+      axios.mockResolvedValue(mockResponse);
+
+      const mockWriter = new PassThrough();
+      jest.spyOn(mockWriter, 'destroy');
+      fs.createWriteStream.mockReturnValue(mockWriter);
+      fs.ensureDir.mockResolvedValue();
+      fs.stat.mockResolvedValue({ size: 512 });
+
+      const onProgress = jest.fn();
+      await downloadImage('https://example.com/file.psd', '/test/file.psd', onProgress);
+
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Downloaded: file.psd'));
+    });
+
+    test('should reject PSD download when no content-length header', async () => {
+      const psdData = makePsdData();
+      const mockStream = Readable.from([psdData]);
+      const mockResponse = { data: mockStream, headers: {} };
+      axios.mockResolvedValue(mockResponse);
+
+      const mockWriter = new PassThrough();
+      jest.spyOn(mockWriter, 'destroy');
+      fs.createWriteStream.mockReturnValue(mockWriter);
+      fs.ensureDir.mockResolvedValue();
+      fs.stat.mockResolvedValue({ size: 512 });
+
+      const onProgress = jest.fn();
+      await expect(downloadImage('https://example.com/file.psd', '/test/file.psd', onProgress))
+        .rejects.toThrow('cannot verify completeness');
+
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('cannot verify completeness'));
+    });
+
+    test('should reject PSD download with invalid header magic bytes', async () => {
+      const badData = Buffer.alloc(512, 0xAA); // no valid header
+      const mockStream = Readable.from([badData]);
+      const mockResponse = { data: mockStream, headers: { 'content-length': '512' } };
+      axios.mockResolvedValue(mockResponse);
+
+      const mockWriter = new PassThrough();
+      jest.spyOn(mockWriter, 'destroy');
+      fs.createWriteStream.mockReturnValue(mockWriter);
+      fs.ensureDir.mockResolvedValue();
+      fs.stat.mockResolvedValue({ size: 512 });
+
+      const onProgress = jest.fn();
+      await expect(downloadImage('https://example.com/file.psd', '/test/file.psd', onProgress))
+        .rejects.toThrow('magic bytes');
+
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('magic bytes'));
+    });
+
+    test('should retry PSD download after missing content-length failure', async () => {
+      const psdData = makePsdData();
+
+      const writer1 = new PassThrough();
+      jest.spyOn(writer1, 'destroy');
+
+      const writer2 = new PassThrough();
+      jest.spyOn(writer2, 'destroy');
+
+      axios
+        .mockResolvedValueOnce({ data: Readable.from([Buffer.from(psdData)]), headers: {} })
+        .mockResolvedValueOnce({ data: Readable.from([Buffer.from(psdData)]), headers: { 'content-length': '512' } });
+
+      fs.createWriteStream
+        .mockReturnValueOnce(writer1)
+        .mockReturnValueOnce(writer2);
+      fs.ensureDir.mockResolvedValue();
+      fs.stat.mockResolvedValue({ size: 512 });
+      fs.pathExists.mockResolvedValue(true);
+
+      const onProgress = jest.fn();
+      await downloadImageWithRetry('https://example.com/file.psd', '/test/file.psd', onProgress);
+
+      expect(axios).toHaveBeenCalledTimes(2);
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Retrying'));
+    });
+
+    test('should validate .psb files the same as .psd', async () => {
+      const psbData = makePsdData();
+      const mockStream = Readable.from([psbData]);
+      const mockResponse = { data: mockStream, headers: {} };
+      axios.mockResolvedValue(mockResponse);
+
+      const mockWriter = new PassThrough();
+      jest.spyOn(mockWriter, 'destroy');
+      fs.createWriteStream.mockReturnValue(mockWriter);
+      fs.ensureDir.mockResolvedValue();
+      fs.stat.mockResolvedValue({ size: 512 });
+
+      await expect(downloadImage('https://example.com/file.psb', '/test/file.psb'))
+        .rejects.toThrow('cannot verify completeness');
     });
   });
 
