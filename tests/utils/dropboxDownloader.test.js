@@ -14,6 +14,7 @@ jest.mock('axios');
 jest.mock('fs-extra');
 jest.mock('../../src/utils/config');
 jest.mock('../../src/utils/delay');
+jest.mock('adm-zip');
 
 // Mock sanitizeFilename
 jest.mock('../../src/utils/urlUtils', () => ({
@@ -69,9 +70,10 @@ describe('dropboxDownloader', () => {
       expect(result.downloadUrl).toContain('dl=1');
     });
 
-    test('should throw error for folder URLs', () => {
-      expect(() => parseDropboxUrl('https://www.dropbox.com/sh/abc123xyz?dl=0'))
-        .toThrow('Dropbox folder downloads are not supported');
+    test('should parse folder URLs and mark isFolder=true', () => {
+      const result = parseDropboxUrl('https://www.dropbox.com/sh/abc123xyz?dl=0');
+      expect(result.isFolder).toBe(true);
+      expect(result.downloadUrl).toContain('dl=1');
     });
 
     test('should throw error for null URL', () => {
@@ -593,6 +595,46 @@ describe('dropboxDownloader', () => {
       );
 
       expect(onProgress).toHaveBeenCalled();
+    });
+
+    test('should report extracted file count for folder downloads', async () => {
+      const AdmZip = require('adm-zip');
+      const mockEntries = [
+        { isDirectory: false },
+        { isDirectory: false },
+        { isDirectory: true }
+      ];
+      AdmZip.mockImplementation(() => ({
+        getEntries: () => mockEntries,
+        extractAllTo: jest.fn()
+      }));
+
+      const mockStream = new stream.PassThrough();
+      mockStream.push('zip data');
+      mockStream.end();
+
+      axios.get.mockResolvedValue({
+        data: mockStream,
+        headers: { 'content-type': 'application/zip', 'content-length': '8' }
+      });
+
+      fs.pathExists.mockResolvedValue(false);
+      fs.ensureDir.mockResolvedValue();
+      fs.remove.mockResolvedValue();
+
+      const mockWriteStream = new stream.PassThrough();
+      fs.createWriteStream.mockReturnValue(mockWriteStream);
+      fs.stat.mockResolvedValue({ size: 8 });
+
+      setTimeout(() => mockWriteStream.emit('finish'), 10);
+
+      const result = await downloadDropboxLink(
+        'https://www.dropbox.com/scl/fo/abc/FolderName?rlkey=key&dl=0',
+        '/dest'
+      );
+
+      expect(result.filesDownloaded).toBe(2); // 2 non-directory entries
+      expect(result.success).toBe(true);
     });
   });
 });

@@ -6,6 +6,7 @@
 const axios = require('axios');
 const fs = require('fs-extra');
 const path = require('path');
+const AdmZip = require('adm-zip');
 const config = require('./config');
 const { sanitizeFilename } = require('./urlUtils');
 const { delay } = require('./delay');
@@ -26,14 +27,13 @@ function parseDropboxUrl(url) {
   // - https://www.dropbox.com/s/FILEID/filename?dl=1
   // - https://www.dropbox.com/scl/fi/FILEID/filename?rlkey=KEY&dl=0
   // - https://dl.dropboxusercontent.com/s/FILEID/filename
-  // - https://www.dropbox.com/sh/FOLDERID/... (folders not supported)
+  // - https://www.dropbox.com/sh/FOLDERID/... (old folder format, downloads as ZIP)
+  // - https://www.dropbox.com/scl/fo/FOLDERID/name?rlkey=KEY (new folder format, downloads as ZIP)
 
   const urlLower = url.toLowerCase();
 
-  // Check if it's a folder URL (not supported)
-  if (urlLower.includes('/sh/')) {
-    throw new Error('Dropbox folder downloads are not supported (only individual files)');
-  }
+  // Detect folder URLs (both old /sh/ and new /scl/fo/ formats)
+  const isFolder = urlLower.includes('/sh/') || urlLower.includes('/scl/fo/');
 
   // Extract filename from URL path
   let filename = null;
@@ -43,12 +43,15 @@ function parseDropboxUrl(url) {
     filename = pathParts[pathParts.length - 1];
   }
 
-  // Convert to direct download URL
+  // Convert to direct download URL (dl=1 triggers ZIP for folders, direct file for files)
   let downloadUrl = url;
 
-  // If it's a regular dropbox.com URL, convert dl=0 to dl=1
-  if (urlLower.includes('dropbox.com/s/') || urlLower.includes('dropbox.com/scl/fi/')) {
-    // Replace dl=0 with dl=1, or add dl=1 if not present
+  if (
+    urlLower.includes('dropbox.com/s/') ||
+    urlLower.includes('dropbox.com/scl/fi/') ||
+    urlLower.includes('dropbox.com/scl/fo/') ||
+    urlLower.includes('dropbox.com/sh/')
+  ) {
     if (downloadUrl.includes('dl=0')) {
       downloadUrl = downloadUrl.replace('dl=0', 'dl=1');
     } else if (!downloadUrl.includes('dl=1')) {
@@ -58,13 +61,14 @@ function parseDropboxUrl(url) {
   }
 
   // Extract file ID for tracking
-  const fileIdMatch = url.match(/\/s\/([a-zA-Z0-9]+)/);
+  const fileIdMatch = url.match(/\/(?:s|sh|fo|fi)\/([a-zA-Z0-9]+)/);
   const fileId = fileIdMatch ? fileIdMatch[1] : 'unknown';
 
   return {
     fileId,
     downloadUrl,
-    filename
+    filename,
+    isFolder
   };
 }
 
@@ -95,7 +99,7 @@ async function downloadDropboxFile(url, destDir, onProgress = () => {}) {
 
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
     try {
-      const { downloadUrl, filename: urlFilename } = parseDropboxUrl(url);
+      const { downloadUrl, filename: urlFilename, isFolder } = parseDropboxUrl(url);
 
       // Make request to get file metadata and start download
       const response = await axios.get(downloadUrl, {
@@ -116,6 +120,13 @@ async function downloadDropboxFile(url, destDir, onProgress = () => {}) {
 
       if (!filename || filename.includes('?')) {
         filename = `dropbox_file_${Date.now()}`;
+      }
+
+      // For folder downloads, ensure .zip extension
+      const contentType = response.headers['content-type'] || '';
+      const isZip = isFolder || contentType.includes('application/zip') || contentType.includes('application/x-zip');
+      if (isZip && !filename.endsWith('.zip')) {
+        filename = `${filename}.zip`;
       }
 
       filename = sanitizeFilename(filename);
@@ -167,6 +178,21 @@ async function downloadDropboxFile(url, destDir, onProgress = () => {}) {
       const finalSize = (await fs.stat(filepath)).size;
       onProgress(`✅ [DROPBOX] Downloaded: ${filename} (${formatBytes(finalSize)})`);
 
+      // Auto-extract ZIP files (folder downloads)
+      if (isZip) {
+        onProgress(`📦 [DROPBOX] Extracting folder contents...`);
+        try {
+          const zip = new AdmZip(filepath);
+          const entries = zip.getEntries().filter(e => !e.isDirectory);
+          zip.extractAllTo(destDir, true);
+          await fs.remove(filepath);
+          onProgress(`✅ [DROPBOX] Extracted ${entries.length} file(s) from folder`);
+          return { success: true, filename, size: finalSize, skipped: false, extractedFiles: entries.length };
+        } catch (extractError) {
+          onProgress(`⚠️ [DROPBOX] ZIP extraction failed: ${extractError.message} (ZIP kept at ${filename})`);
+        }
+      }
+
       return { success: true, filename, size: finalSize, skipped: false };
 
     } catch (error) {
@@ -209,9 +235,10 @@ async function downloadDropboxFile(url, destDir, onProgress = () => {}) {
 async function downloadDropboxLink(url, destDir, onProgress = () => {}) {
   try {
     const result = await downloadDropboxFile(url, destDir, onProgress);
+    const filesDownloaded = result.skipped ? 0 : (result.extractedFiles != null ? result.extractedFiles : 1);
     return {
       success: result.success,
-      filesDownloaded: result.skipped ? 0 : 1,
+      filesDownloaded,
       filesFailed: result.success ? 0 : 1,
       filesSkipped: result.skipped ? 1 : 0,
       totalSize: result.size
