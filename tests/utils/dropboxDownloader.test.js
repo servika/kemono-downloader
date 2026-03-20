@@ -7,7 +7,8 @@ jest.mock('puppeteer-extra-plugin-stealth', () => jest.fn(() => 'stealth'));
 const {
   parseDropboxUrl,
   isCdnDownloadUrl,
-  getDropboxFolderDownloadUrl,
+  getDropboxFolderFiles,
+  downloadSingleFile,
   downloadDropboxFile,
   downloadDropboxLink,
   formatBytes
@@ -113,81 +114,72 @@ describe('dropboxDownloader', () => {
     });
   });
 
-  describe('getDropboxFolderDownloadUrl', () => {
+  describe('getDropboxFolderFiles', () => {
     let mockPage, mockBrowser;
 
-    function buildMockBrowser({ requestUrl = 'https://dl.dropboxusercontent.com/zip/download/abc', clickResult = 'text: Download' } = {}) {
+    function buildMockBrowser(entries = []) {
+      const responseHandlers = [];
       mockPage = {
         setViewport: jest.fn().mockResolvedValue(),
         setUserAgent: jest.fn().mockResolvedValue(),
-        setRequestInterception: jest.fn().mockResolvedValue(),
         on: jest.fn((event, handler) => {
-          if (event === 'request') {
-            // Simulate CDN URL being intercepted immediately
-            handler({ url: () => requestUrl, abort: jest.fn(), continue: jest.fn() });
-          }
+          if (event === 'response') responseHandlers.push(handler);
         }),
-        goto: jest.fn().mockResolvedValue(),
-        evaluate: jest.fn().mockResolvedValue(clickResult)
+        goto: jest.fn().mockImplementation(async () => {
+          // Simulate Dropbox firing list_shared_link_folder_entries response
+          const fakeResp = {
+            url: () => 'https://www.dropbox.com/list_shared_link_folder_entries',
+            json: async () => ({ entries, has_more_entries: false })
+          };
+          for (const h of responseHandlers) h(fakeResp);
+        }),
+        evaluate: jest.fn().mockResolvedValue()
       };
       mockBrowser = {
         newPage: jest.fn().mockResolvedValue(mockPage),
-        on: jest.fn(),
         close: jest.fn().mockResolvedValue()
       };
       puppeteer.launch.mockResolvedValue(mockBrowser);
     }
 
-    test('should capture CDN URL via request interception and return it', async () => {
-      buildMockBrowser();
-      const result = await getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0');
-      expect(result).toBe('https://dl.dropboxusercontent.com/zip/download/abc');
+    test('should return file list from folder entries response', async () => {
+      buildMockBrowser([
+        { filename: 'photo1.jpg', href: 'https://www.dropbox.com/scl/fo/abc/f1/photo1.jpg?rlkey=k&dl=0', bytes: 1000, is_dir: false },
+        { filename: 'photo2.jpg', href: 'https://www.dropbox.com/scl/fo/abc/f2/photo2.jpg?rlkey=k&dl=0', bytes: 2000, is_dir: false },
+        { filename: 'subfolder',  href: 'https://www.dropbox.com/scl/fo/abc/sub?rlkey=k&dl=0', bytes: 0, is_dir: true }
+      ]);
+
+      const files = await getDropboxFolderFiles('https://www.dropbox.com/scl/fo/abc?dl=0');
+      expect(files).toHaveLength(2); // subfolder excluded
+      expect(files[0]).toEqual({ filename: 'photo1.jpg', url: expect.stringContaining('dl=1'), size: 1000 });
+      expect(files[1]).toEqual({ filename: 'photo2.jpg', url: expect.stringContaining('dl=1'), size: 2000 });
+      expect(mockBrowser.close).toHaveBeenCalled();
+    });
+
+    test('should throw if no entries found', async () => {
+      buildMockBrowser([]); // empty folder response
+      await expect(getDropboxFolderFiles('https://www.dropbox.com/scl/fo/abc?dl=0'))
+        .rejects.toThrow('No files found in folder');
       expect(mockBrowser.close).toHaveBeenCalled();
     });
 
     test('should close browser even if navigation fails', async () => {
-      buildMockBrowser();
+      buildMockBrowser([
+        { filename: 'photo.jpg', href: 'https://www.dropbox.com/scl/fo/abc/f/photo.jpg?rlkey=k&dl=0', bytes: 500, is_dir: false }
+      ]);
       mockPage.goto.mockRejectedValueOnce(new Error('networkidle2 timeout'))
                .mockRejectedValueOnce(new Error('load timeout'))
-               .mockResolvedValue(); // domcontentloaded succeeds
-      const result = await getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0');
-      expect(result).toBe('https://dl.dropboxusercontent.com/zip/download/abc');
-      expect(mockBrowser.close).toHaveBeenCalled();
-    });
-
-    test('should throw if Download button not found', async () => {
-      buildMockBrowser({ requestUrl: 'https://www.dropbox.com/regular', clickResult: null });
-      // Non-CDN URL won't set capturedUrl, button click returns null
-      await expect(getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0'))
-        .rejects.toThrow('Could not find Download button');
+               .mockResolvedValue();
+      // No entries fired on failed gotos, so will throw 'No files found'
+      await expect(getDropboxFolderFiles('https://www.dropbox.com/scl/fo/abc?dl=0'))
+        .rejects.toThrow();
       expect(mockBrowser.close).toHaveBeenCalled();
     });
 
     test('should throw if browser launch fails', async () => {
       puppeteer.launch.mockRejectedValue(new Error('Failed to launch'));
-      await expect(getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0'))
+      await expect(getDropboxFolderFiles('https://www.dropbox.com/scl/fo/abc?dl=0'))
         .rejects.toThrow('Failed to launch');
-    });
-
-    test('should throw timeout error if CDN URL never captured', async () => {
-      mockPage = {
-        setViewport: jest.fn().mockResolvedValue(),
-        setUserAgent: jest.fn().mockResolvedValue(),
-        setRequestInterception: jest.fn().mockResolvedValue(),
-        on: jest.fn(), // no CDN URL emitted
-        goto: jest.fn().mockResolvedValue(),
-        evaluate: jest.fn().mockResolvedValue('text: Download')
-      };
-      mockBrowser = {
-        newPage: jest.fn().mockResolvedValue(mockPage),
-        on: jest.fn(),
-        close: jest.fn().mockResolvedValue()
-      };
-      puppeteer.launch.mockResolvedValue(mockBrowser);
-
-      await expect(getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0'))
-        .rejects.toThrow('Timed out waiting for Dropbox');
-      expect(mockBrowser.close).toHaveBeenCalled();
     });
   });
 
@@ -452,7 +444,7 @@ describe('dropboxDownloader', () => {
 
       expect(result.success).toBe(true);
       expect(delay).toHaveBeenCalled();
-      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Retry attempt'));
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Retry'));
     });
 
     test('should retry with exponential backoff', async () => {
@@ -700,54 +692,57 @@ describe('dropboxDownloader', () => {
       expect(onProgress).toHaveBeenCalled();
     });
 
-    test('should use Puppeteer to download folder and report extracted file count', async () => {
-      const AdmZip = require('adm-zip');
-      AdmZip.mockImplementation(() => ({
-        getEntries: () => [{ isDirectory: false }, { isDirectory: false }, { isDirectory: true }],
-        extractAllTo: jest.fn()
-      }));
-
-      // Mock Puppeteer: intercept CDN URL immediately via request handler
+    test('should use Puppeteer to list folder files and download each individually', async () => {
+      // Mock Puppeteer: simulate list_shared_link_folder_entries response with 2 files
+      const responseHandlers = [];
       const mockFolderPage = {
         setViewport: jest.fn().mockResolvedValue(),
         setUserAgent: jest.fn().mockResolvedValue(),
-        setRequestInterception: jest.fn().mockResolvedValue(),
         on: jest.fn((event, handler) => {
-          if (event === 'request') {
-            handler({ url: () => 'https://dl.dropboxusercontent.com/zip/download/folder.zip', abort: jest.fn(), continue: jest.fn() });
-          }
+          if (event === 'response') responseHandlers.push(handler);
         }),
-        goto: jest.fn().mockResolvedValue(),
-        evaluate: jest.fn().mockResolvedValue('text: Download')
+        goto: jest.fn().mockImplementation(async () => {
+          const fakeResp = {
+            url: () => 'https://www.dropbox.com/list_shared_link_folder_entries',
+            json: async () => ({
+              entries: [
+                { filename: 'photo1.jpg', href: 'https://www.dropbox.com/scl/fo/abc/f1/photo1.jpg?rlkey=k&dl=0', bytes: 100, is_dir: false },
+                { filename: 'photo2.jpg', href: 'https://www.dropbox.com/scl/fo/abc/f2/photo2.jpg?rlkey=k&dl=0', bytes: 200, is_dir: false }
+              ],
+              has_more_entries: false
+            })
+          };
+          for (const h of responseHandlers) h(fakeResp);
+        }),
+        evaluate: jest.fn().mockResolvedValue()
       };
-      const mockFolderBrowser = {
+      puppeteer.launch.mockResolvedValue({
         newPage: jest.fn().mockResolvedValue(mockFolderPage),
-        on: jest.fn(),
         close: jest.fn().mockResolvedValue()
-      };
-      puppeteer.launch.mockResolvedValue(mockFolderBrowser);
-
-      // Mock axios download of the ZIP from CDN
-      const mockStream = new stream.PassThrough();
-      mockStream.push('zip data');
-      mockStream.end();
-      axios.get.mockResolvedValue({
-        data: mockStream,
-        headers: { 'content-type': 'application/zip', 'content-length': '8' }
       });
+
+      // Mock axios: return a small stream for each file download
+      const makeStream = () => {
+        const s = new stream.PassThrough();
+        s.push('data');
+        s.end();
+        return s;
+      };
+      axios.get
+        .mockResolvedValueOnce({ data: makeStream(), headers: { 'content-length': '4' } })
+        .mockResolvedValueOnce({ data: makeStream(), headers: { 'content-length': '4' } });
 
       fs.pathExists.mockResolvedValue(false);
       fs.ensureDir.mockResolvedValue();
-      fs.remove.mockResolvedValue();
-      fs.open.mockResolvedValue(1);
-      fs.read.mockImplementation((fd, buf) => { buf[0] = 0x50; buf[1] = 0x4B; return Promise.resolve(); });
-      fs.close.mockResolvedValue();
 
-      const mockWriteStream = new stream.PassThrough();
-      fs.createWriteStream.mockReturnValue(mockWriteStream);
-      fs.stat.mockResolvedValue({ size: 8 });
+      const mockWriteStream1 = new stream.PassThrough();
+      const mockWriteStream2 = new stream.PassThrough();
+      fs.createWriteStream
+        .mockReturnValueOnce(mockWriteStream1)
+        .mockReturnValueOnce(mockWriteStream2);
+      fs.stat.mockResolvedValue({ size: 4 });
 
-      setTimeout(() => mockWriteStream.emit('finish'), 10);
+      setTimeout(() => { mockWriteStream1.emit('finish'); mockWriteStream2.emit('finish'); }, 10);
 
       const result = await downloadDropboxLink(
         'https://www.dropbox.com/scl/fo/abc/FolderName?rlkey=key&dl=0',
@@ -755,11 +750,8 @@ describe('dropboxDownloader', () => {
       );
 
       expect(puppeteer.launch).toHaveBeenCalled();
-      expect(axios.get).toHaveBeenCalledWith(
-        'https://dl.dropboxusercontent.com/zip/download/folder.zip',
-        expect.any(Object)
-      );
-      expect(result.filesDownloaded).toBe(2); // 2 non-directory entries
+      expect(axios.get).toHaveBeenCalledTimes(2);
+      expect(result.filesDownloaded).toBe(2);
       expect(result.success).toBe(true);
     });
 
