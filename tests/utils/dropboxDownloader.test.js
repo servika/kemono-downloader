@@ -1,9 +1,18 @@
+jest.mock('puppeteer-extra', () => ({
+  use: jest.fn(),
+  launch: jest.fn()
+}));
+jest.mock('puppeteer-extra-plugin-stealth', () => jest.fn(() => 'stealth'));
+
 const {
   parseDropboxUrl,
+  isCdnDownloadUrl,
+  getDropboxFolderDownloadUrl,
   downloadDropboxFile,
   downloadDropboxLink,
   formatBytes
 } = require('../../src/utils/dropboxDownloader');
+const puppeteer = require('puppeteer-extra');
 const axios = require('axios');
 const fs = require('fs-extra');
 const config = require('../../src/utils/config');
@@ -87,6 +96,98 @@ describe('dropboxDownloader', () => {
     test('should handle uppercase URLs', () => {
       const result = parseDropboxUrl('HTTPS://WWW.DROPBOX.COM/S/ABC123/FILE.TXT?DL=0');
       expect(result.downloadUrl).toContain('dl=1');
+    });
+  });
+
+  describe('isCdnDownloadUrl', () => {
+    test('should detect dropboxusercontent.com URLs', () => {
+      expect(isCdnDownloadUrl('https://dl.dropboxusercontent.com/zip/download/abc')).toBe(true);
+    });
+
+    test('should detect dropbox.com/zip/download URLs', () => {
+      expect(isCdnDownloadUrl('https://www.dropbox.com/zip/download/abc')).toBe(true);
+    });
+
+    test('should return false for regular Dropbox URLs', () => {
+      expect(isCdnDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=1')).toBe(false);
+    });
+  });
+
+  describe('getDropboxFolderDownloadUrl', () => {
+    let mockPage, mockBrowser;
+
+    function buildMockBrowser({ requestUrl = 'https://dl.dropboxusercontent.com/zip/download/abc', clickResult = 'text: Download' } = {}) {
+      mockPage = {
+        setViewport: jest.fn().mockResolvedValue(),
+        setUserAgent: jest.fn().mockResolvedValue(),
+        setRequestInterception: jest.fn().mockResolvedValue(),
+        on: jest.fn((event, handler) => {
+          if (event === 'request') {
+            // Simulate CDN URL being intercepted immediately
+            handler({ url: () => requestUrl, abort: jest.fn(), continue: jest.fn() });
+          }
+        }),
+        goto: jest.fn().mockResolvedValue(),
+        evaluate: jest.fn().mockResolvedValue(clickResult)
+      };
+      mockBrowser = {
+        newPage: jest.fn().mockResolvedValue(mockPage),
+        on: jest.fn(),
+        close: jest.fn().mockResolvedValue()
+      };
+      puppeteer.launch.mockResolvedValue(mockBrowser);
+    }
+
+    test('should capture CDN URL via request interception and return it', async () => {
+      buildMockBrowser();
+      const result = await getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0');
+      expect(result).toBe('https://dl.dropboxusercontent.com/zip/download/abc');
+      expect(mockBrowser.close).toHaveBeenCalled();
+    });
+
+    test('should close browser even if navigation fails', async () => {
+      buildMockBrowser();
+      mockPage.goto.mockRejectedValueOnce(new Error('networkidle2 timeout'))
+               .mockRejectedValueOnce(new Error('load timeout'))
+               .mockResolvedValue(); // domcontentloaded succeeds
+      const result = await getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0');
+      expect(result).toBe('https://dl.dropboxusercontent.com/zip/download/abc');
+      expect(mockBrowser.close).toHaveBeenCalled();
+    });
+
+    test('should throw if Download button not found', async () => {
+      buildMockBrowser({ requestUrl: 'https://www.dropbox.com/regular', clickResult: null });
+      // Non-CDN URL won't set capturedUrl, button click returns null
+      await expect(getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0'))
+        .rejects.toThrow('Could not find Download button');
+      expect(mockBrowser.close).toHaveBeenCalled();
+    });
+
+    test('should throw if browser launch fails', async () => {
+      puppeteer.launch.mockRejectedValue(new Error('Failed to launch'));
+      await expect(getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0'))
+        .rejects.toThrow('Failed to launch');
+    });
+
+    test('should throw timeout error if CDN URL never captured', async () => {
+      mockPage = {
+        setViewport: jest.fn().mockResolvedValue(),
+        setUserAgent: jest.fn().mockResolvedValue(),
+        setRequestInterception: jest.fn().mockResolvedValue(),
+        on: jest.fn(), // no CDN URL emitted
+        goto: jest.fn().mockResolvedValue(),
+        evaluate: jest.fn().mockResolvedValue('text: Download')
+      };
+      mockBrowser = {
+        newPage: jest.fn().mockResolvedValue(mockPage),
+        on: jest.fn(),
+        close: jest.fn().mockResolvedValue()
+      };
+      puppeteer.launch.mockResolvedValue(mockBrowser);
+
+      await expect(getDropboxFolderDownloadUrl('https://www.dropbox.com/scl/fo/abc?dl=0'))
+        .rejects.toThrow('Timed out waiting for Dropbox');
+      expect(mockBrowser.close).toHaveBeenCalled();
     });
   });
 
@@ -522,6 +623,7 @@ describe('dropboxDownloader', () => {
         filesDownloaded: 1,
         filesFailed: 0,
         filesSkipped: 0,
+        manualRequired: false,
         totalSize: 4
       });
     });
@@ -547,6 +649,7 @@ describe('dropboxDownloader', () => {
         filesDownloaded: 0,
         filesFailed: 0,
         filesSkipped: 1,
+        manualRequired: false,
         totalSize: 1024
       });
     });
@@ -597,22 +700,37 @@ describe('dropboxDownloader', () => {
       expect(onProgress).toHaveBeenCalled();
     });
 
-    test('should report extracted file count for folder downloads', async () => {
+    test('should use Puppeteer to download folder and report extracted file count', async () => {
       const AdmZip = require('adm-zip');
-      const mockEntries = [
-        { isDirectory: false },
-        { isDirectory: false },
-        { isDirectory: true }
-      ];
       AdmZip.mockImplementation(() => ({
-        getEntries: () => mockEntries,
+        getEntries: () => [{ isDirectory: false }, { isDirectory: false }, { isDirectory: true }],
         extractAllTo: jest.fn()
       }));
 
+      // Mock Puppeteer: intercept CDN URL immediately via request handler
+      const mockFolderPage = {
+        setViewport: jest.fn().mockResolvedValue(),
+        setUserAgent: jest.fn().mockResolvedValue(),
+        setRequestInterception: jest.fn().mockResolvedValue(),
+        on: jest.fn((event, handler) => {
+          if (event === 'request') {
+            handler({ url: () => 'https://dl.dropboxusercontent.com/zip/download/folder.zip', abort: jest.fn(), continue: jest.fn() });
+          }
+        }),
+        goto: jest.fn().mockResolvedValue(),
+        evaluate: jest.fn().mockResolvedValue('text: Download')
+      };
+      const mockFolderBrowser = {
+        newPage: jest.fn().mockResolvedValue(mockFolderPage),
+        on: jest.fn(),
+        close: jest.fn().mockResolvedValue()
+      };
+      puppeteer.launch.mockResolvedValue(mockFolderBrowser);
+
+      // Mock axios download of the ZIP from CDN
       const mockStream = new stream.PassThrough();
       mockStream.push('zip data');
       mockStream.end();
-
       axios.get.mockResolvedValue({
         data: mockStream,
         headers: { 'content-type': 'application/zip', 'content-length': '8' }
@@ -621,6 +739,9 @@ describe('dropboxDownloader', () => {
       fs.pathExists.mockResolvedValue(false);
       fs.ensureDir.mockResolvedValue();
       fs.remove.mockResolvedValue();
+      fs.open.mockResolvedValue(1);
+      fs.read.mockImplementation((fd, buf) => { buf[0] = 0x50; buf[1] = 0x4B; return Promise.resolve(); });
+      fs.close.mockResolvedValue();
 
       const mockWriteStream = new stream.PassThrough();
       fs.createWriteStream.mockReturnValue(mockWriteStream);
@@ -633,8 +754,29 @@ describe('dropboxDownloader', () => {
         '/dest'
       );
 
+      expect(puppeteer.launch).toHaveBeenCalled();
+      expect(axios.get).toHaveBeenCalledWith(
+        'https://dl.dropboxusercontent.com/zip/download/folder.zip',
+        expect.any(Object)
+      );
       expect(result.filesDownloaded).toBe(2); // 2 non-directory entries
       expect(result.success).toBe(true);
+    });
+
+    test('should return manualRequired when Puppeteer fails to capture folder URL', async () => {
+      puppeteer.launch.mockRejectedValue(new Error('Browser failed to launch'));
+
+      const onProgress = jest.fn();
+      const result = await downloadDropboxLink(
+        'https://www.dropbox.com/scl/fo/abc/FolderName?rlkey=key&dl=0',
+        '/dest',
+        onProgress
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.manualRequired).toBe(true);
+      expect(result.filesFailed).toBe(0);
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('manually'));
     });
   });
 });
