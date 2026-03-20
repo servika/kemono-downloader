@@ -9,6 +9,7 @@ const {
   isCdnDownloadUrl,
   getDropboxFolderFiles,
   downloadSingleFile,
+  downloadAndExtractZip,
   downloadDropboxFile,
   downloadDropboxLink,
   formatBytes
@@ -117,6 +118,11 @@ describe('dropboxDownloader', () => {
   describe('getDropboxFolderFiles', () => {
     let mockPage, mockBrowser;
 
+    const mockCdpClient = {
+      send: jest.fn().mockResolvedValue(),
+      on: jest.fn()
+    };
+
     function buildMockBrowser(entries = []) {
       const responseHandlers = [];
       mockPage = {
@@ -133,7 +139,11 @@ describe('dropboxDownloader', () => {
           };
           for (const h of responseHandlers) h(fakeResp);
         }),
-        evaluate: jest.fn().mockResolvedValue()
+        evaluate: jest.fn().mockResolvedValue(),
+        cookies: jest.fn().mockResolvedValue([]),
+        target: jest.fn().mockReturnValue({
+          createCDPSession: jest.fn().mockResolvedValue(mockCdpClient)
+        })
       };
       mockBrowser = {
         newPage: jest.fn().mockResolvedValue(mockPage),
@@ -149,10 +159,11 @@ describe('dropboxDownloader', () => {
         { filename: 'subfolder',  href: 'https://www.dropbox.com/scl/fo/abc/sub?rlkey=k&dl=0', bytes: 0, is_dir: true }
       ]);
 
-      const files = await getDropboxFolderFiles('https://www.dropbox.com/scl/fo/abc?dl=0');
-      expect(files).toHaveLength(2); // subfolder excluded
-      expect(files[0]).toEqual({ filename: 'photo1.jpg', url: expect.stringContaining('dl=1'), size: 1000 });
-      expect(files[1]).toEqual({ filename: 'photo2.jpg', url: expect.stringContaining('dl=1'), size: 2000 });
+      const result = await getDropboxFolderFiles('https://www.dropbox.com/scl/fo/abc?dl=0');
+      expect(result.files).toHaveLength(2); // subfolder excluded
+      expect(result.files[0]).toEqual({ filename: 'photo1.jpg', url: expect.stringContaining('dl=1'), size: 1000 });
+      expect(result.files[1]).toEqual({ filename: 'photo2.jpg', url: expect.stringContaining('dl=1'), size: 2000 });
+      expect(result.cookieHeader).toBeDefined();
       expect(mockBrowser.close).toHaveBeenCalled();
     });
 
@@ -409,6 +420,27 @@ describe('dropboxDownloader', () => {
         'https://www.dropbox.com/s/abc/file.pdf?dl=0',
         '/dest'
       )).rejects.toThrow('Dropbox rate limit exceeded');
+    });
+
+    test('should throw error when server returns HTML instead of file', async () => {
+      const htmlStream = new stream.PassThrough();
+      htmlStream.push('<!DOCTYPE html><html><body>Sign in to Dropbox</body></html>');
+      htmlStream.end();
+
+      axios.get.mockResolvedValue({
+        data: htmlStream,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'content-length': '259000'
+        }
+      });
+
+      fs.pathExists.mockResolvedValue(false);
+
+      await expect(downloadDropboxFile(
+        'https://www.dropbox.com/s/abc/photo.jpg?dl=0',
+        '/dest'
+      )).rejects.toThrow('HTML page');
     });
 
     test('should retry on network error', async () => {
@@ -714,7 +746,14 @@ describe('dropboxDownloader', () => {
           };
           for (const h of responseHandlers) h(fakeResp);
         }),
-        evaluate: jest.fn().mockResolvedValue()
+        evaluate: jest.fn().mockResolvedValue(),
+        cookies: jest.fn().mockResolvedValue([]),
+        target: jest.fn().mockReturnValue({
+          createCDPSession: jest.fn().mockResolvedValue({
+            send: jest.fn().mockResolvedValue(),
+            on: jest.fn()
+          })
+        })
       };
       puppeteer.launch.mockResolvedValue({
         newPage: jest.fn().mockResolvedValue(mockFolderPage),

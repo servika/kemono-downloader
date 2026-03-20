@@ -6,6 +6,8 @@
 const axios = require('axios');
 const fs = require('fs-extra');
 const path = require('path');
+const os = require('os');
+const AdmZip = require('adm-zip');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const config = require('./config');
@@ -92,13 +94,88 @@ function formatBytes(bytes) {
 }
 
 /**
+ * Download a ZIP from a direct URL and extract its contents to destDir.
+ * @param {string} zipUrl - Direct ZIP download URL (e.g. captured via CDP)
+ * @param {string} destDir - Destination directory
+ * @param {string} folderName - Display name for progress messages
+ * @param {Function} onProgress - Progress callback
+ * @param {string|null} cookieHeader - Optional session cookie header
+ * @returns {Promise<Object>} - { success, filename, size, skipped, extractedFiles }
+ */
+async function downloadAndExtractZip(zipUrl, destDir, folderName, onProgress, cookieHeader) {
+  const tmpPath = path.join(os.tmpdir(), `dropbox_folder_${Date.now()}.zip`);
+  try {
+    const headers = cookieHeader ? { Cookie: cookieHeader } : {};
+    const response = await axios.get(zipUrl, {
+      responseType: 'stream',
+      maxRedirects: 5,
+      timeout: 120000,
+      headers
+    });
+
+    const contentType = response.headers['content-type'] || '';
+    if (contentType.startsWith('text/html')) {
+      response.data.destroy();
+      throw new Error('ZIP URL returned an HTML page — the download link may have expired');
+    }
+
+    const fileSize = parseInt(response.headers['content-length'] || '0', 10);
+    onProgress(`📥 [DROPBOX] Downloading folder ZIP${fileSize > 0 ? ` (${formatBytes(fileSize)})` : ''}...`);
+
+    const writer = fs.createWriteStream(tmpPath);
+    let downloadedBytes = 0;
+    let lastProgressUpdate = Date.now();
+
+    response.data.on('data', (chunk) => {
+      downloadedBytes += chunk.length;
+      const now = Date.now();
+      if (fileSize > 0 && now - lastProgressUpdate >= 1000) {
+        const percentage = Math.round((downloadedBytes / fileSize) * 100);
+        onProgress(`📥 [DROPBOX] ZIP: ${percentage}% (${formatBytes(downloadedBytes)}/${formatBytes(fileSize)})`);
+        lastProgressUpdate = now;
+      }
+    });
+
+    response.data.pipe(writer);
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+      response.data.on('error', reject);
+    });
+
+    onProgress(`✅ [DROPBOX] ZIP downloaded, extracting...`);
+
+    await fs.ensureDir(destDir);
+    const zip = new AdmZip(tmpPath);
+    const entries = zip.getEntries();
+    const fileEntries = entries.filter(e => !e.isDirectory);
+
+    let extractedCount = 0;
+    let totalSize = 0;
+    for (const entry of fileEntries) {
+      const entryFilename = sanitizeFilename(path.basename(entry.entryName));
+      zip.extractEntryTo(entry, destDir, false, true);
+      const stats = await fs.stat(path.join(destDir, entryFilename)).catch(() => ({ size: 0 }));
+      totalSize += stats.size;
+      extractedCount++;
+      onProgress(`📂 [DROPBOX] Extracted: ${entryFilename}`);
+    }
+
+    onProgress(`✅ [DROPBOX] Extracted ${extractedCount} file(s) from folder ZIP`);
+    return { success: true, filename: folderName, size: totalSize, skipped: false, extractedFiles: extractedCount };
+  } finally {
+    await fs.remove(tmpPath).catch(() => {});
+  }
+}
+
+/**
  * Use Puppeteer to navigate to a Dropbox shared folder page and intercept the
  * automatic list_shared_link_folder_entries API call that Dropbox makes on page load.
- * Returns an array of individual file download URLs with their filenames.
+ * Also attempts to capture a folder-level ZIP download URL via CDP.
  * Handles pagination by scrolling to trigger additional API calls.
  * @param {string} folderUrl - Dropbox shared folder URL
  * @param {Function} onProgress - Progress callback
- * @returns {Promise<Array>} - Array of { filename, url, size }
+ * @returns {Promise<Object>} - { files: Array<{ filename, url, size }>, cookieHeader, zipUrl }
  */
 async function getDropboxFolderFiles(folderUrl, onProgress = () => {}) {
   let browser = null;
@@ -125,16 +202,35 @@ async function getDropboxFolderFiles(folderUrl, onProgress = () => {}) {
 
     const allEntries = [];
     let hasMore = false;
+    const responsePromises = [];
+
+    // Set up CDP to intercept the folder-level ZIP download URL
+    let capturedZipUrl = null;
+    try {
+      const client = await page.target().createCDPSession();
+      await client.send('Browser.setDownloadBehavior', {
+        behavior: 'deny',
+        downloadPath: os.tmpdir(),
+        eventsEnabled: true
+      });
+      client.on('Browser.downloadWillBegin', (event) => {
+        const { url } = event;
+        if (url.includes('dl.dropboxusercontent.com') || url.includes('dropbox.com/zip/')) {
+          capturedZipUrl = url;
+          onProgress('📦 [DROPBOX] Captured folder download URL');
+        }
+      });
+    } catch (_) { /* CDP not available in this environment */ }
 
     // Intercept the folder listing API that Dropbox calls automatically on page load
-    page.on('response', async (resp) => {
+    page.on('response', (resp) => {
       if (!resp.url().includes('list_shared_link_folder_entries')) return;
-      try {
-        const data = await resp.json();
+      const p = resp.json().then(data => {
         const files = (data.entries || []).filter(e => !e.is_dir);
         allEntries.push(...files);
         hasMore = data.has_more_entries || false;
-      } catch (_) { /* ignore parse errors */ }
+      }).catch(() => {});
+      responsePromises.push(p);
     });
 
     onProgress('🌐 [DROPBOX] Loading folder page...');
@@ -149,6 +245,7 @@ async function getDropboxFolderFiles(folderUrl, onProgress = () => {}) {
     }
 
     await delay(2000);
+    await Promise.all(responsePromises);
 
     // Handle pagination: scroll to trigger Dropbox's infinite scroll / load more
     let prevCount = 0;
@@ -157,6 +254,26 @@ async function getDropboxFolderFiles(folderUrl, onProgress = () => {}) {
       hasMore = false; // reset; will be set again by response handler if more pages exist
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await delay(3000);
+      await Promise.all(responsePromises);
+    }
+
+    // Try clicking the folder-level Download button to capture a ZIP URL via CDP
+    if (!capturedZipUrl && allEntries.length > 0) {
+      try {
+        const clicked = await page.evaluate(() => {
+          const els = Array.from(document.querySelectorAll('button, [role="button"]'));
+          const btn = els.find(el => {
+            const t = (el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+            return t === 'download' || t === 'download all';
+          });
+          if (btn) { btn.click(); return true; }
+          return false;
+        });
+        if (clicked) {
+          onProgress('🖱️  [DROPBOX] Clicked Download button, waiting for ZIP URL...');
+          await delay(5000);
+        }
+      } catch (_) { /* Download button click failed, continuing with per-file approach */ }
     }
 
     if (allEntries.length === 0) {
@@ -165,12 +282,19 @@ async function getDropboxFolderFiles(folderUrl, onProgress = () => {}) {
 
     onProgress(`✅ [DROPBOX] Found ${allEntries.length} file(s) in folder`);
 
+    // Capture session cookies — required for downloading files via axios
+    // (without them Dropbox returns an HTML page instead of the actual file)
+    const cookies = await page.cookies();
+    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
     // Convert each entry's href to a direct download URL
-    return allEntries.map(entry => ({
+    const files = allEntries.map(entry => ({
       filename: entry.filename,
       url: entry.href.includes('dl=0') ? entry.href.replace('dl=0', 'dl=1') : `${entry.href}&dl=1`,
       size: entry.bytes || 0
     }));
+
+    return { files, cookieHeader, zipUrl: capturedZipUrl };
   } finally {
     if (browser) await browser.close();
   }
@@ -186,16 +310,25 @@ async function getDropboxFolderFiles(folderUrl, onProgress = () => {}) {
  * @param {number} retryDelay - Base delay between retries in ms
  * @returns {Promise<Object>} - { success, filename, size, skipped }
  */
-async function downloadSingleFile(downloadUrl, destDir, hintFilename, onProgress, retryAttempts, retryDelay) {
+async function downloadSingleFile(downloadUrl, destDir, hintFilename, onProgress, retryAttempts, retryDelay, cookieHeader = null) {
   let lastError = null;
 
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
     try {
+      const headers = cookieHeader ? { Cookie: cookieHeader } : {};
       const response = await axios.get(downloadUrl, {
         responseType: 'stream',
         maxRedirects: 5,
-        timeout: 30000
+        timeout: 30000,
+        headers
       });
+
+      // Detect HTML responses — Dropbox returns HTML for invalid/expired download links
+      const contentType = response.headers['content-type'] || '';
+      if (contentType.startsWith('text/html')) {
+        response.data.destroy();
+        throw new Error('Dropbox returned an HTML page instead of file content — the download link may be invalid or require authentication');
+      }
 
       // Resolve filename from Content-Disposition, hint, or fallback
       let filename = hintFilename;
@@ -280,13 +413,24 @@ async function downloadDropboxFile(url, destDir, onProgress = () => {}) {
   // For folder URLs, list individual files via Puppeteer and download each separately
   if (isFolder) {
     try {
-      const files = await getDropboxFolderFiles(url, onProgress);
+      const { files, cookieHeader, zipUrl } = await getDropboxFolderFiles(url, onProgress);
+
+      // If a folder-level ZIP URL was captured via CDP, download and extract it
+      if (zipUrl) {
+        onProgress('📦 [DROPBOX] Downloading folder as ZIP...');
+        try {
+          return await downloadAndExtractZip(zipUrl, destDir, urlFilename || 'folder', onProgress, cookieHeader);
+        } catch (zipErr) {
+          onProgress(`⚠️ [DROPBOX] ZIP download failed: ${zipErr.message}. Falling back to per-file download...`);
+        }
+      }
+
       let totalDownloaded = 0;
       let totalSize = 0;
 
       for (const file of files) {
         try {
-          const result = await downloadSingleFile(file.url, destDir, file.filename, onProgress, retryAttempts, retryDelay);
+          const result = await downloadSingleFile(file.url, destDir, file.filename, onProgress, retryAttempts, retryDelay, cookieHeader);
           if (!result.skipped) totalDownloaded++;
           totalSize += result.size || 0;
         } catch (err) {
@@ -336,6 +480,7 @@ module.exports = {
   isCdnDownloadUrl,
   getDropboxFolderFiles,
   downloadSingleFile,
+  downloadAndExtractZip,
   downloadDropboxFile,
   downloadDropboxLink,
   formatBytes
