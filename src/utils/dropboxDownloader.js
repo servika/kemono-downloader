@@ -282,17 +282,44 @@ async function getDropboxFolderFiles(folderUrl, onProgress = () => {}) {
 
     onProgress(`✅ [DROPBOX] Found ${allEntries.length} file(s) in folder`);
 
-    // Capture session cookies — required for downloading files via axios
-    // (without them Dropbox returns an HTML page instead of the actual file)
+    // Capture session cookies for fallback
     const cookies = await page.cookies();
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
-    // Convert each entry's href to a direct download URL
-    const files = allEntries.map(entry => ({
-      filename: entry.filename,
-      url: entry.href.includes('dl=0') ? entry.href.replace('dl=0', 'dl=1') : `${entry.href}&dl=1`,
-      size: entry.bytes || 0
-    }));
+    // Resolve actual CDN download URLs for each file using the live browser session.
+    // Dropbox share links (entry.href) redirect to dl.dropboxusercontent.com only when
+    // processed through a browser with valid session cookies — axios alone gets HTML.
+    const files = [];
+    for (const entry of allEntries) {
+      const shareUrl = entry.href.includes('dl=0') ? entry.href.replace('dl=0', 'dl=1') : `${entry.href}&dl=1`;
+      let resolvedUrl = shareUrl;
+      try {
+        const cdnPage = await browser.newPage();
+        try {
+          let cdnUrl = null;
+          await cdnPage.setRequestInterception(true);
+          cdnPage.on('request', (request) => {
+            const reqUrl = request.url();
+            if (reqUrl.includes('dl.dropboxusercontent.com')) {
+              cdnUrl = reqUrl;
+              request.abort();
+            } else {
+              request.continue();
+            }
+          });
+          try {
+            await cdnPage.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          } catch (_) { /* abort throws, expected */ }
+          if (cdnUrl) {
+            resolvedUrl = cdnUrl;
+            onProgress(`🔗 [DROPBOX] Resolved CDN URL for ${entry.filename}`);
+          }
+        } finally {
+          await cdnPage.close();
+        }
+      } catch (_) { /* keep shareUrl as fallback */ }
+      files.push({ filename: entry.filename, url: resolvedUrl, size: entry.bytes || 0 });
+    }
 
     return { files, cookieHeader, zipUrl: capturedZipUrl };
   } finally {
@@ -315,7 +342,9 @@ async function downloadSingleFile(downloadUrl, destDir, hintFilename, onProgress
 
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
     try {
-      const headers = cookieHeader ? { Cookie: cookieHeader } : {};
+      // CDN URLs (dl.dropboxusercontent.com) don't need session cookies
+      const isCdn = downloadUrl.includes('dl.dropboxusercontent.com');
+      const headers = (!isCdn && cookieHeader) ? { Cookie: cookieHeader } : {};
       const response = await axios.get(downloadUrl, {
         responseType: 'stream',
         maxRedirects: 5,
