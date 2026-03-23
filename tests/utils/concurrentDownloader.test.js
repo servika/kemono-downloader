@@ -1,5 +1,5 @@
 const ConcurrentDownloader = require('../../src/utils/concurrentDownloader');
-const { downloadImageWithRetry } = require('../../src/utils/fileUtils');
+const { downloadImageWithRetry, checkImageIntegrity } = require('../../src/utils/fileUtils');
 const { delay } = require('../../src/utils/delay');
 const config = require('../../src/utils/config');
 const fs = require('fs-extra');
@@ -28,6 +28,9 @@ describe('ConcurrentDownloader', () => {
     
     // Mock delay to resolve immediately
     delay.mockResolvedValue();
+
+    // Mock checkImageIntegrity to return valid by default
+    checkImageIntegrity.mockResolvedValue({ valid: true });
     
     // Mock getImageName
     getImageName.mockImplementation((imageInfo, index) => `image_${index}.jpg`);

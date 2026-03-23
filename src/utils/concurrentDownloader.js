@@ -1,4 +1,4 @@
-const { downloadImageWithRetry } = require('./fileUtils');
+const { downloadImageWithRetry, checkImageIntegrity } = require('./fileUtils');
 const { delay } = require('./delay');
 const config = require('./config');
 
@@ -179,12 +179,20 @@ class ConcurrentDownloader {
                 return;
               }
             } else {
-              // File exists and no upgrade needed
-              this.stats.skipped++;
-              if (config.shouldShowSkippedFiles()) {
-                onProgress(`⏭️  [${this.activeSemaphore}/${this.maxConcurrent}] Skipping: ${imageName} (${stats.size} bytes)`);
+              // File exists and no upgrade needed — verify integrity before skipping
+              const integrity = await checkImageIntegrity(imagePath);
+              if (!integrity.valid) {
+                // File is corrupted (e.g. truncated download), delete and re-download
+                await fs.remove(imagePath);
+                onProgress(`🔄 [${this.activeSemaphore}/${this.maxConcurrent}] Re-downloading corrupted file: ${imageName} (${integrity.reason})`);
+                // Fall through to download logic below
+              } else {
+                this.stats.skipped++;
+                if (config.shouldShowSkippedFiles()) {
+                  onProgress(`⏭️  [${this.activeSemaphore}/${this.maxConcurrent}] Skipping: ${imageName} (${stats.size} bytes)`);
+                }
+                return;
               }
-              return;
             }
           }
         } catch (error) {

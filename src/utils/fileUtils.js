@@ -147,24 +147,17 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
         }
       }
 
-      const shouldDeleteFile = error.message.includes('Size mismatch') ||
-                               error.message.includes('File size mismatch') ||
-                               error.message.includes('truncated') ||
-                               error.message.includes('connection lost') ||
-                               error.message.includes('Download interrupted');
+      // Always clean up partial/corrupt files on any download error
+      try {
+        if (await fs.pathExists(filepath)) {
+          await fs.remove(filepath);
+          if (onProgress) onProgress(`🗑️  Deleted incomplete file: ${path.basename(filepath)}`);
+        }
+      } catch (deleteError) {
+        if (onProgress) onProgress(`⚠️  Failed to delete incomplete file: ${deleteError.message}`);
+      }
 
       if (attempt === retryAttempts) {
-        // Final attempt failed — clean up any corrupt/partial file before throwing
-        if (shouldDeleteFile) {
-          try {
-            if (await fs.pathExists(filepath)) {
-              await fs.remove(filepath);
-              if (onProgress) onProgress(`🗑️  Deleted incomplete file: ${path.basename(filepath)}`);
-            }
-          } catch (deleteError) {
-            if (onProgress) onProgress(`⚠️  Failed to delete incomplete file: ${deleteError.message}`);
-          }
-        }
         throw lastError;
       } else {
         // Check if we should retry based on error type
@@ -173,21 +166,14 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
                            error.response?.status === 403 ||
                            error.code === 'ECONNABORTED' ||
                            error.message.includes('timeout') ||
-                           shouldDeleteFile;
+                           error.message.includes('Stream error') ||
+                           error.message.includes('Size mismatch') ||
+                           error.message.includes('File size mismatch') ||
+                           error.message.includes('truncated') ||
+                           error.message.includes('connection lost') ||
+                           error.message.includes('Download interrupted');
 
         if (shouldRetry) {
-          // Delete incomplete/corrupt file before retrying
-          if (shouldDeleteFile) {
-            try {
-              if (await fs.pathExists(filepath)) {
-                await fs.remove(filepath);
-                if (onProgress) onProgress(`🗑️  Deleted incomplete file: ${path.basename(filepath)}`);
-              }
-            } catch (deleteError) {
-              if (onProgress) onProgress(`⚠️  Failed to delete incomplete file: ${deleteError.message}`);
-            }
-          }
-
           if (onProgress) onProgress(`🔄 Retrying ${path.basename(filepath)} (attempt ${attempt + 1}/${retryAttempts})`);
           await delay(retryDelay);
         } else {
