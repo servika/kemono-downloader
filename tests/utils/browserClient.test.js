@@ -145,11 +145,14 @@ describe('browserClient', () => {
     expect(onLog).toHaveBeenCalledWith(expect.stringContaining('failed'));
   });
 
-  test('extractImagesFromRenderedPost should return extracted URLs', async () => {
-    // Mock page.evaluate to return object with urls and debug info (as per actual implementation)
+  test('extractImagesFromRenderedPost should return items with url and filename', async () => {
+    // Mock page.evaluate to return items with url/filename objects
     mockPage.evaluate.mockResolvedValue({
-      urls: ['https://example.com/a.jpg', 'https://example.com/b.png'],
-      debug: { linksFound: 2, imagesFound: 0, videosFound: 0, urlsCollected: 2 }
+      items: [
+        { url: 'https://example.com/a.jpg', filename: 'photo_a.jpg' },
+        { url: 'https://example.com/b.png', filename: null }
+      ],
+      debug: { linksFound: 2, imagesFound: 0, videosFound: 0, itemsCollected: 2 }
     });
 
     const result = await browserClient.extractImagesFromRenderedPost('https://example.com/post');
@@ -158,7 +161,28 @@ describe('browserClient', () => {
     // Delay is called twice: 2000ms during initialize() and 8000ms for rendering
     expect(delay).toHaveBeenCalledWith(2000); // initialize delay
     expect(delay).toHaveBeenCalledWith(8000); // extractImagesFromRenderedPost delay (increased from 3s to 8s)
-    expect(result).toEqual(['https://example.com/a.jpg', 'https://example.com/b.png']);
+    expect(result).toEqual([
+      { url: 'https://example.com/a.jpg', filename: 'photo_a.jpg' },
+      { url: 'https://example.com/b.png', filename: null }
+    ]);
+  });
+
+  test('extractImagesFromRenderedPost should preserve download attribute for RAW files', async () => {
+    // Simulates NEF files where the download attribute has the original filename
+    mockPage.evaluate.mockResolvedValue({
+      items: [
+        { url: 'https://n1.kemono.cr/data/ab/cd/hash123', filename: 'photo.nef' },
+        { url: 'https://n1.kemono.cr/data/ef/gh/hash456', filename: 'image.cr2' }
+      ],
+      debug: { linksFound: 2, imagesFound: 0, videosFound: 0, itemsCollected: 2 }
+    });
+
+    const result = await browserClient.extractImagesFromRenderedPost('https://example.com/post');
+
+    expect(result).toEqual([
+      { url: 'https://n1.kemono.cr/data/ab/cd/hash123', filename: 'photo.nef' },
+      { url: 'https://n1.kemono.cr/data/ef/gh/hash456', filename: 'image.cr2' }
+    ]);
   });
 
   test('extractImagesFromRenderedPost should return empty list on error', async () => {
@@ -167,30 +191,6 @@ describe('browserClient', () => {
     const result = await browserClient.extractImagesFromRenderedPost('https://example.com/post');
 
     expect(result).toEqual([]);
-  });
-
-  test('extractImagesFromRenderedPost should convert thumbnail URLs in browser', async () => {
-    // Test the thumbnail conversion logic that runs inside page.evaluate
-    const convertThumbnailUrl = (url) => {
-      if (!url) return url;
-      if (url.includes('/thumbnail/')) {
-        url = url.replace('/thumbnail/', '/data/');
-      }
-      if (url.includes('_thumb.')) {
-        url = url.replace('_thumb.', '.');
-      }
-      if (url.includes('.thumb.')) {
-        url = url.replace('.thumb.', '.');
-      }
-      return url;
-    };
-
-    // Test all thumbnail patterns
-    expect(convertThumbnailUrl('https://kemono.cr/thumbnail/abc123.jpg')).toBe('https://kemono.cr/data/abc123.jpg');
-    expect(convertThumbnailUrl('https://kemono.cr/image_thumb.jpg')).toBe('https://kemono.cr/image.jpg');
-    expect(convertThumbnailUrl('https://kemono.cr/image.thumb.jpg')).toBe('https://kemono.cr/image.jpg');
-    expect(convertThumbnailUrl('https://kemono.cr/normal.jpg')).toBe('https://kemono.cr/normal.jpg');
-    expect(convertThumbnailUrl(null)).toBe(null);
   });
 
   test('navigateToPage should set browser context', async () => {

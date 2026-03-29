@@ -275,48 +275,61 @@ class BrowserClient {
       }
 
       // Extract image and video URLs from the rendered page
-      const mediaUrls = await this.page.evaluate(() => {
-        const urls = [];
+      const mediaResult = await this.page.evaluate(() => {
+        const items = [];
+        const seenUrls = new Set();
+        // Track img elements that are children of captured <a> links to avoid duplicate preview downloads
+        const capturedImgElements = new Set();
 
-        // Helper function to convert thumbnail URLs to full URLs
-        function convertThumbnailUrl(url) {
-          if (!url) return url;
-
-          // Replace thumbnail paths with full paths
-          if (url.includes('/thumbnail/')) {
-            url = url.replace('/thumbnail/', '/data/');
-          }
-          if (url.includes('_thumb.')) {
-            url = url.replace('_thumb.', '.');
-          }
-          if (url.includes('.thumb.')) {
-            url = url.replace('.thumb.', '.');
-          }
-
-          return url;
+        function isIgnoredUrl(url) {
+          return !url || url.includes('icon') || url.includes('avatar') || url.includes('logo');
         }
 
-        // Priority 1: Find all download links (these are full-size)
-        const links = document.querySelectorAll('a.post__attachment-link, a.fileThumb, a[download], a[href*="/data/"], a[href*=".jpg"], a[href*=".png"], a[href*=".gif"], a[href*=".webp"], a[href*=".mp4"], a[href*=".webm"], a[href*=".psd"], a[href*=".clip"], a[href*=".pdf"], a[href*=".mp3"], a[href*=".flac"], a[href*=".wav"], a[href*=".zip"], a[href*=".rar"]');
+        function addItem(url, filename) {
+          if (isIgnoredUrl(url) || seenUrls.has(url)) return;
+          seenUrls.add(url);
+          items.push({ url, filename: filename || null });
+        }
+
+        // Priority 1: Find all download links (these are full-size files)
+        // Include RAW camera formats (.nef, .cr2, .arw, .dng, .tif, .tiff) and generic binary (.bin)
+        const links = document.querySelectorAll(
+          'a.post__attachment-link, a.fileThumb, a[download], a[href*="/data/"], ' +
+          'a[href*=".jpg"], a[href*=".jpeg"], a[href*=".png"], a[href*=".gif"], a[href*=".webp"], a[href*=".avif"], a[href*=".bmp"], ' +
+          'a[href*=".mp4"], a[href*=".webm"], a[href*=".mov"], a[href*=".mkv"], a[href*=".avi"], ' +
+          'a[href*=".psd"], a[href*=".clip"], a[href*=".pdf"], ' +
+          'a[href*=".mp3"], a[href*=".flac"], a[href*=".wav"], a[href*=".ogg"], ' +
+          'a[href*=".zip"], a[href*=".rar"], a[href*=".7z"], ' +
+          'a[href*=".nef"], a[href*=".cr2"], a[href*=".cr3"], a[href*=".arw"], a[href*=".dng"], a[href*=".raf"], a[href*=".orf"], a[href*=".rw2"], a[href*=".pef"], ' +
+          'a[href*=".tif"], a[href*=".tiff"], a[href*=".bin"]'
+        );
         links.forEach(link => {
           const href = link.href;
-          if (href && !href.includes('icon') && !href.includes('avatar') && !href.includes('logo')) {
-            urls.push(href);
+          if (href && !isIgnoredUrl(href)) {
+            // Capture the download attribute which contains the original filename (e.g., "photo.nef")
+            const downloadAttr = link.getAttribute('download');
+            addItem(href, downloadAttr || null);
+
+            // Mark child <img> elements so we don't re-add them as separate preview downloads
+            const childImgs = link.querySelectorAll('img');
+            childImgs.forEach(img => capturedImgElements.add(img));
           }
         });
 
-        // Priority 2: Find image elements and convert thumbnails
+        // Priority 2: Find image elements (only those NOT already covered by download links)
         const images = document.querySelectorAll('img.post__image, img[data-src], article img, .post__files img, .post__attachment img');
         images.forEach(img => {
-          let src = img.src || img.dataset.src || img.getAttribute('data-src');
-          if (src && !src.includes('icon') && !src.includes('avatar') && !src.includes('logo')) {
-            // Convert thumbnail URL to full URL
-            src = convertThumbnailUrl(src);
+          // Skip images that are children of already-captured <a> links
+          if (capturedImgElements.has(img)) return;
 
-            // Only add if not already in list
-            if (!urls.includes(src)) {
-              urls.push(src);
+          let src = img.src || img.dataset.src || img.getAttribute('data-src');
+          if (src && !isIgnoredUrl(src)) {
+            // Skip thumbnail/preview URLs when we already have the full file from Priority 1
+            // These are server-converted previews (e.g., .tif for .nef files) and not the originals
+            if (src.includes('/thumbnail/') || src.includes('img.kemono.cr/thumbnail')) {
+              return;
             }
+            addItem(src, null);
           }
         });
 
@@ -324,8 +337,8 @@ class BrowserClient {
         const videos = document.querySelectorAll('video source, video');
         videos.forEach(video => {
           const src = video.src || video.dataset.src || video.getAttribute('data-src');
-          if (src && !urls.includes(src)) {
-            urls.push(src);
+          if (src) {
+            addItem(src, null);
           }
         });
 
@@ -334,21 +347,21 @@ class BrowserClient {
           linksFound: links.length,
           imagesFound: images.length,
           videosFound: videos.length,
-          urlsCollected: urls.length
+          itemsCollected: items.length
         };
 
-        // Remove duplicates
-        return { urls: [...new Set(urls)], debug };
+        return { items, debug };
       });
 
       if (onLog) {
-        onLog(`✅ Extracted ${mediaUrls.urls.length} media URLs from rendered page`);
-        if (mediaUrls.urls.length === 0) {
-          onLog(`   🔍 Debug: Found ${mediaUrls.debug.linksFound} links, ${mediaUrls.debug.imagesFound} images, ${mediaUrls.debug.videosFound} videos`);
+        onLog(`✅ Extracted ${mediaResult.items.length} media URLs from rendered page`);
+        if (mediaResult.items.length === 0) {
+          onLog(`   🔍 Debug: Found ${mediaResult.debug.linksFound} links, ${mediaResult.debug.imagesFound} images, ${mediaResult.debug.videosFound} videos`);
         }
       }
 
-      return mediaUrls.urls;
+      // Return objects with {url, filename} so downstream code preserves original filenames
+      return mediaResult.items;
 
     } catch (error) {
       if (onLog) onLog(`❌ Failed to extract images: ${error.message}`);
