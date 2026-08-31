@@ -611,4 +611,43 @@ describe('KemonoDownloader', () => {
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Some errors occurred'));
     });
   });
+  describe('_isRunSuccessful', () => {
+    beforeEach(() => {
+      config.getMaxErrorRatio.mockReturnValue(0.5);
+    });
+
+    test('should accept a run without errors', () => {
+      expect(downloader._isRunSuccessful(10, 0)).toBe(true);
+    });
+
+    test('should accept a run with no errors and no files (empty profile)', () => {
+      expect(downloader._isRunSuccessful(0, 0)).toBe(true);
+    });
+
+    test('should reject a run where every download failed (CDN outage)', () => {
+      expect(downloader._isRunSuccessful(0, 25)).toBe(false);
+    });
+
+    test('should accept a run with a few failures', () => {
+      expect(downloader._isRunSuccessful(90, 10)).toBe(true);
+    });
+
+    test('should reject a run where most downloads failed', () => {
+      expect(downloader._isRunSuccessful(10, 90)).toBe(false);
+    });
+
+    test('should accept a run exactly at the ratio limit', () => {
+      expect(downloader._isRunSuccessful(50, 50)).toBe(true);
+    });
+
+    test('should honor a custom maxErrorRatio', () => {
+      config.getMaxErrorRatio.mockReturnValue(0.9);
+      expect(downloader._isRunSuccessful(20, 80)).toBe(true);
+    });
+
+    test('should reject any failure when maxErrorRatio is 0', () => {
+      config.getMaxErrorRatio.mockReturnValue(0);
+      expect(downloader._isRunSuccessful(99, 1)).toBe(false);
+    });
+  });
 });

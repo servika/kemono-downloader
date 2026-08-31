@@ -1,6 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const axios = require('axios');
+const { getAxiosProxyOptions } = require('./proxyAgent');
 const cheerio = require('cheerio');
 const config = require('./config');
 const { delay } = require('./delay');
@@ -218,7 +219,8 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       timeout: timeout,
       headers: {
         'User-Agent': config.get('api.userAgent') || 'Mozilla/5.0 (compatible; kemono-downloader)'
-      }
+      },
+      ...getAxiosProxyOptions(imageUrl)
     });
 
     // For .bin files, try to determine the real extension from response headers

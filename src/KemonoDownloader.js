@@ -522,6 +522,16 @@ class KemonoDownloader {
           const profileImages = this.stats.imagesDownloaded - initialImages;
           const profileErrors = this.stats.errors - initialErrors;
 
+          // A CDN outage makes every file fail while the post list still loads
+          // fine. Marking such a run complete would move the folder to
+          // completed/ and comment out profiles.txt, so the profile would be
+          // skipped once the files are reachable again.
+          if (!this._isRunSuccessful(profileImages, profileErrors)) {
+            console.log(`  ⚠️  Profile left in-progress: ${profileErrors} error(s), only ${profileImages} file(s) downloaded`);
+            console.log(`     Not marking as completed — run again once downloads succeed`);
+            continue;
+          }
+
           const completedAt = new Date().toISOString();
 
           // Write .download-state.json into in-progress folder (before move)
@@ -557,6 +567,21 @@ class KemonoDownloader {
    * Move profile folder from in-progress/ to completed/, update the registry,
    * and comment out the URL in profiles.txt.
    */
+  /**
+   * Decides whether a profile run is complete enough to be marked as done
+   * A run that failed most of its downloads (a CDN outage, a network drop) must
+   * stay in-progress so the next run retries it instead of skipping it.
+   * @param {number} downloaded - Files downloaded during this profile run
+   * @param {number} errors - Errors recorded during this profile run
+   * @returns {boolean} True when the run may be marked completed
+   */
+  _isRunSuccessful(downloaded, errors) {
+    if (errors <= 0) return true;
+
+    const attempted = downloaded + errors;
+    return errors / attempted <= config.getMaxErrorRatio();
+  }
+
   async _finalizeProfile(username, profileUrl, { service, userId, totalPosts, totalImages, completedAt, profileFileManager }) {
     // Move folder: in-progress/username → completed/username
     const srcDir  = path.join(this.inProgressDir, username);

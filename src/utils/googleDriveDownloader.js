@@ -10,6 +10,7 @@ const path = require('path');
 const config = require('./config');
 const { sanitizeFilename } = require('./urlUtils');
 const { delay } = require('./delay');
+const { getAxiosProxyOptions } = require('./proxyAgent');
 
 /**
  * Parse Google Drive URL to determine type and extract file/folder ID
@@ -83,7 +84,8 @@ async function downloadGoogleDriveFile(fileId, destDir, onProgress = () => {}) {
         validateStatus: (status) => status < 400,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        },
+        ...getAxiosProxyOptions(downloadUrl)
       });
 
       // Extract filename from Content-Disposition header

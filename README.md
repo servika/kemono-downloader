@@ -75,7 +75,8 @@ The application creates a `config.json` file on first run with the following def
     "delayBetweenAPIRequests": 500,
     "delayBetweenPages": 1000,
     "retryAttempts": 3,
-    "retryDelay": 1000
+    "retryDelay": 1000,
+    "maxErrorRatio": 0.5
   },
   "api": {
     "timeout": 45000,
@@ -106,6 +107,10 @@ The application creates a `config.json` file on first run with the following def
 - `delayBetweenPages`: Milliseconds to wait between page requests
 - `retryAttempts`: Number of retry attempts for failed downloads
 - `retryDelay`: Milliseconds to wait before retrying failed downloads
+- `maxErrorRatio`: Share of failed downloads (0-1) above which a profile is
+  **not** marked completed and stays in `in-progress/` for the next run.
+  Protects the download state during a CDN outage, where every file fails while
+  post listings still load fine. Set to `1` to always mark profiles completed.
 
 #### API Settings
 - `timeout`: Request timeout in milliseconds
@@ -166,6 +171,44 @@ download/
 1. **API Endpoints**: Primary method for fetching post data and image URLs
 2. **HTML Scraping**: Fallback method when API endpoints are unavailable
 3. **Multiple Selectors**: Uses various CSS selectors to find content across different page layouts
+
+## Proxy / Blocked CDN
+
+kemono serves post files from separate CDN nodes (`n1`-`n4.kemono.cr`, subnet
+`91.149.227.0/24`). Some ISP subnets are blocked on those nodes while the main
+site keeps working — the symptom is that pages and metadata load fine, but every
+file download times out and only thumbnails succeed.
+
+Diagnose it with:
+
+```bash
+npm run check-network
+```
+
+If the CDN nodes are unreachable, route just those hosts through a proxy in
+`config.json`:
+
+```json
+"network": {
+  "proxy": {
+    "enabled": true,
+    "url": "socks5://127.0.0.1:40000",
+    "onlyHosts": null,
+    "useForBrowser": false
+  }
+}
+```
+
+- `url` — `socks5://`, `socks5h://`, `http://` or `https://`, with optional
+  `user:pass@` credentials
+- `onlyHosts` — `null` uses the built-in CDN host list (recommended: everything
+  else stays on the fast direct connection); a custom array overrides it;
+  an empty array `[]` sends **all** traffic through the proxy
+- `useForBrowser` — also start the Puppeteer browser behind the proxy; only
+  needed when the main site is blocked too
+
+Re-run `npm run check-network` afterwards to confirm the nodes answer through
+the tunnel.
 
 ## Troubleshooting
 

@@ -159,6 +159,29 @@ describe('Config', () => {
       config.set('logging.verboseProgress', false);
       expect(config.shouldShowVerboseProgress()).toBe(false);
     });
+
+    test('should return the default max error ratio', () => {
+      expect(config.getMaxErrorRatio()).toBe(0.5);
+    });
+
+    test('should return a configured max error ratio', () => {
+      config.set('download.maxErrorRatio', 0.2);
+      expect(config.getMaxErrorRatio()).toBe(0.2);
+
+      config.set('download.maxErrorRatio', 0);
+      expect(config.getMaxErrorRatio()).toBe(0);
+    });
+
+    test('should fall back to the default for out-of-range or invalid ratios', () => {
+      config.set('download.maxErrorRatio', 1.5);
+      expect(config.getMaxErrorRatio()).toBe(0.5);
+
+      config.set('download.maxErrorRatio', -1);
+      expect(config.getMaxErrorRatio()).toBe(0.5);
+
+      config.set('download.maxErrorRatio', 'half');
+      expect(config.getMaxErrorRatio()).toBe(0.5);
+    });
   });
 
   describe('mergeConfig', () => {

@@ -13,6 +13,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const config = require('./config');
 const { sanitizeFilename } = require('./urlUtils');
 const { delay } = require('./delay');
+const { getAxiosProxyOptions } = require('./proxyAgent');
 
 puppeteer.use(StealthPlugin());
 
@@ -110,7 +111,8 @@ async function downloadAndExtractZip(zipUrl, destDir, folderName, onProgress, co
       responseType: 'stream',
       maxRedirects: 5,
       timeout: 120000,
-      headers
+      headers,
+      ...getAxiosProxyOptions(zipUrl)
     });
 
     const contentType = response.headers['content-type'] || '';
@@ -349,7 +351,8 @@ async function downloadSingleFile(downloadUrl, destDir, hintFilename, onProgress
         responseType: 'stream',
         maxRedirects: 5,
         timeout: 30000,
-        headers
+        headers,
+        ...getAxiosProxyOptions(downloadUrl)
       });
 
       // Detect HTML responses — Dropbox returns HTML for invalid/expired download links

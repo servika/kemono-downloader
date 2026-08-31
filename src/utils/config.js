@@ -22,7 +22,8 @@ const DEFAULT_CONFIG = {
     delayBetweenPages: 1000,
     retryAttempts: 3,
     retryDelay: 1000,
-    forceRedownload: false
+    forceRedownload: false,
+    maxErrorRatio: 0.5
   },
   api: {
     baseUrl: "https://kemono.cr",
@@ -42,6 +43,14 @@ const DEFAULT_CONFIG = {
     verboseProgress: true,
     showSkippedFiles: true,
     showDetailedErrors: true
+  },
+  network: {
+    proxy: {
+      enabled: false,
+      url: "",
+      onlyHosts: null,
+      useForBrowser: false
+    }
   }
 };
 
@@ -212,6 +221,11 @@ class Config {
 
   shouldForceRedownload() {
     return this.get('download.forceRedownload') === true;
+  }
+
+  getMaxErrorRatio() {
+    const ratio = this.get('download.maxErrorRatio');
+    return typeof ratio === 'number' && ratio >= 0 && ratio <= 1 ? ratio : 0.5;
   }
 }
 

@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { getAxiosProxyOptions } = require('../utils/proxyAgent');
 const { delay } = require('../utils/delay');
 const config = require('../utils/config');
 const { sanitizeFilename } = require('../utils/urlUtils');
@@ -48,7 +49,8 @@ async function makeRequestWithRetry(url, onLog) {
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin'
           },
-          timeout: config.getTimeout()
+          timeout: config.getTimeout(),
+          ...getAxiosProxyOptions(url)
         });
       }
 

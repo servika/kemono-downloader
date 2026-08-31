@@ -7,7 +7,8 @@
     "delayBetweenAPIRequests": 200,
     "delayBetweenPages": 1000,
     "retryAttempts": 3,
-    "retryDelay": 2000
+    "retryDelay": 2000,
+    "maxErrorRatio": 0.5
   },
   "api": {
     "baseUrl": "https://kemono.cr",
@@ -29,5 +30,13 @@
     "showSkippedFiles": true,
     "showDetailedErrors": true,
     "debugBrowserExtraction": false
+  },
+  "network": {
+    "proxy": {
+      "enabled": false,
+      "url": "",
+      "onlyHosts": null,
+      "useForBrowser": false
+    }
   }
 }
