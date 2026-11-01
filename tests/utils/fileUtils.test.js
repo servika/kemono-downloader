@@ -6,7 +6,8 @@ const {
   savePostMetadata,
   saveHtmlContent,
   readProfilesFile,
-  validatePsdHeader
+  validatePsdHeader,
+  resetHostHealth
 } = require('../../src/utils/fileUtils');
 const axios = require('axios');
 const fs = require('fs-extra');
@@ -327,6 +328,7 @@ describe('fileUtils', () => {
       const requestedUrls = () => axios.mock.calls.map(([options]) => options.url);
 
       beforeEach(() => {
+        resetHostHealth();
         axios.mockReset();
         mirrorResolver.resolveMirrorUrl.mockReset();
         mirrorResolver.isMirrorUrl.mockImplementation(url => url === MIRROR);
@@ -397,6 +399,110 @@ describe('fileUtils', () => {
         expect(mirrorResolver.reportMirrorFailure).toHaveBeenCalledWith(refused, expect.any(Function));
         expect(fs.remove).toHaveBeenCalledWith('/test/image.jpg');
         expect(mirrorResolver.resolveMirrorUrl).toHaveBeenCalledTimes(1);
+      });
+
+      describe('when the server is unreachable', () => {
+        const timeoutError = () => Object.assign(new Error('timeout of 45000ms exceeded'), { code: 'ECONNABORTED' });
+        const OTHER = 'https://n1.kemono.cr/data/bb/bb/other.jpg';
+        const OTHER_MIRROR = 'https://n2.pawchive.pw/data/bb/bb/other.jpg';
+
+        // Three failed attempts of one file mark the server as down
+        const markServerDown = async (onProgress = jest.fn()) => {
+          mirrorResolver.resolveMirrorUrl.mockResolvedValueOnce(null);
+          axios
+            .mockRejectedValueOnce(timeoutError())
+            .mockRejectedValueOnce(timeoutError())
+            .mockRejectedValueOnce(timeoutError());
+          await expect(downloadImageWithRetry(KEMONO, '/test/image.jpg', onProgress, null, POST)).rejects.toThrow('timeout');
+          axios.mockClear();
+        };
+
+        afterEach(() => {
+          jest.restoreAllMocks();
+        });
+
+        test('should go straight to the mirror once the server is marked down', async () => {
+          await markServerDown();
+          mirrorResolver.isMirrorUrl.mockImplementation(url => url === OTHER_MIRROR);
+          mirrorResolver.resolveMirrorUrl.mockResolvedValueOnce(OTHER_MIRROR);
+          axios.mockResolvedValueOnce(successfulResponse());
+
+          await downloadImageWithRetry(OTHER, '/test/other.jpg', jest.fn(), null, POST);
+
+          expect(requestedUrls()).toEqual([OTHER_MIRROR]);
+        });
+
+        test('should fail fast without touching the server when the mirror lacks the file', async () => {
+          await markServerDown();
+          mirrorResolver.resolveMirrorUrl.mockResolvedValueOnce(null);
+          const onProgress = jest.fn();
+
+          await expect(downloadImageWithRetry(OTHER, '/test/other.jpg', onProgress, THUMB, POST))
+            .rejects.toThrow('Server unreachable: n1.kemono.cr');
+
+          expect(axios).not.toHaveBeenCalled();
+          expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('No full-size copy on mirrors'));
+        });
+
+        test('should announce the switch once', async () => {
+          const onProgress = jest.fn();
+          await markServerDown(onProgress);
+
+          const announcements = onProgress.mock.calls.filter(([msg]) => msg.includes('is unreachable'));
+          expect(announcements).toHaveLength(1);
+        });
+
+        test('should not mark the server down on HTTP errors', async () => {
+          mirrorResolver.resolveMirrorUrl.mockResolvedValue(null);
+          axios.mockRejectedValue(httpError(503));
+          await expect(downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), null, POST)).rejects.toThrow('HTTP 503');
+          axios.mockClear();
+          axios.mockReset();
+          axios.mockResolvedValueOnce(successfulResponse());
+
+          await downloadImageWithRetry(OTHER, '/test/other.jpg', jest.fn(), null, POST);
+
+          expect(requestedUrls()).toEqual([OTHER]);
+        });
+
+        test('should keep other servers in use', async () => {
+          await markServerDown();
+          const elsewhere = 'https://n2.kemono.cr/data/bb/bb/other.jpg';
+          axios.mockResolvedValueOnce(successfulResponse());
+
+          await downloadImageWithRetry(elsewhere, '/test/other.jpg', jest.fn(), null, POST);
+
+          expect(requestedUrls()).toEqual([elsewhere]);
+        });
+
+        test('should need consecutive failures: a success clears the count', async () => {
+          mirrorResolver.resolveMirrorUrl.mockResolvedValue(null);
+          axios
+            .mockRejectedValueOnce(timeoutError())
+            .mockRejectedValueOnce(timeoutError())
+            .mockResolvedValueOnce(successfulResponse());
+          await downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), null, POST);
+
+          axios
+            .mockRejectedValueOnce(timeoutError())
+            .mockRejectedValueOnce(timeoutError())
+            .mockResolvedValueOnce(successfulResponse());
+          axios.mockClear();
+          await downloadImageWithRetry(OTHER, '/test/other.jpg', jest.fn(), null, POST);
+
+          expect(requestedUrls()).toEqual([OTHER, OTHER, OTHER]);
+        });
+
+        test('should try the server again after the cooldown', async () => {
+          await markServerDown();
+          const now = Date.now();
+          jest.spyOn(Date, 'now').mockReturnValue(now + 5 * 60 * 1000 + 1);
+          axios.mockResolvedValueOnce(successfulResponse());
+
+          await downloadImageWithRetry(OTHER, '/test/other.jpg', jest.fn(), null, POST);
+
+          expect(requestedUrls()).toEqual([OTHER]);
+        });
       });
 
       test('should not look for a mirror without post context', async () => {

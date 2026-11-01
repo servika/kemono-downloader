@@ -49,6 +49,53 @@ const CONTENT_TYPE_EXT_MAP = {
   'application/pdf': '.pdf',
 };
 
+// Connection-level failures: the server never answered, as opposed to answering with an error
+const UNREACHABLE_ERROR_CODES = new Set([
+  'ECONNABORTED', 'ETIMEDOUT', 'ECONNREFUSED', 'ECONNRESET',
+  'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN'
+]);
+const UNREACHABLE_FAILURE_THRESHOLD = 3;
+const UNREACHABLE_COOLDOWN_MS = 5 * 60 * 1000;
+
+/** @type {Map<string, {failures: number, downUntil: number}>} */
+const hostHealth = new Map();
+
+function getUrlHostname(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return url;
+  }
+}
+
+function isServerUnreachable(error) {
+  return !error.response && UNREACHABLE_ERROR_CODES.has(error.code);
+}
+
+function isHostDown(host) {
+  const health = hostHealth.get(host);
+  if (!health?.downUntil) return false;
+  if (Date.now() < health.downUntil) return true;
+  // Cooldown is over: let downloads test the server again
+  hostHealth.delete(host);
+  return false;
+}
+
+function recordHostFailure(host, onProgress) {
+  const health = hostHealth.get(host) || { failures: 0, downUntil: 0 };
+  health.failures++;
+  hostHealth.set(host, health);
+
+  if (!health.downUntil && health.failures >= UNREACHABLE_FAILURE_THRESHOLD) {
+    health.downUntil = Date.now() + UNREACHABLE_COOLDOWN_MS;
+    if (onProgress) onProgress(`🔌 ${host} is unreachable - switching to mirrors for ${UNREACHABLE_COOLDOWN_MS / 60000} minutes`);
+  }
+}
+
+function resetHostHealth() {
+  hostHealth.clear();
+}
+
 /**
  * Validates the PSD/PSB file header structure.
  * Header layout (26 bytes): magic(4) + version(2) + reserved(6) + channels(2) + height(4) + width(4) + bitDepth(2) + colorMode(2)
@@ -147,7 +194,10 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
     mirrorTried = true;
 
     const mirrorUrl = await resolveMirrorUrl(imageUrl, mirrorContext.postUrl, onProgress);
-    if (!mirrorUrl) return null;
+    if (!mirrorUrl) {
+      if (onProgress) onProgress(`🪞 No full-size copy on mirrors: ${path.basename(filepath)}`);
+      return null;
+    }
 
     if (onProgress) onProgress(`🪞 Trying mirror: ${new URL(mirrorUrl).hostname}`);
     try {
@@ -162,13 +212,26 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
     }
   };
 
+  const host = getUrlHostname(imageUrl);
+
   // Try downloading full resolution first
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
+    if (isHostDown(host)) {
+      const mirrored = await tryMirror();
+      if (mirrored) return mirrored.result;
+      throw lastError || new Error(`Server unreachable: ${host}`);
+    }
+
     try {
       const result = await downloadImage(imageUrl, filepath, onProgress);
+      hostHealth.delete(host);
       return result; // Success, exit retry loop - result includes actual filepath
     } catch (error) {
       lastError = error;
+
+      if (isServerUnreachable(error)) {
+        recordHostFailure(host, onProgress);
+      }
 
       if (error.response?.status === 404) {
         const mirrored = await tryMirror();
@@ -204,7 +267,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
         throw lastError;
       } else {
         // Check if we should retry based on error type
-        const shouldRetry = error.response?.status >= 500 ||
+        const shouldRetry = !isHostDown(host) && (
+                           error.response?.status >= 500 ||
                            error.response?.status === 429 ||
                            error.response?.status === 403 ||
                            error.code === 'ECONNABORTED' ||
@@ -214,7 +278,7 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
                            error.message.includes('File size mismatch') ||
                            error.message.includes('truncated') ||
                            error.message.includes('connection lost') ||
-                           error.message.includes('Download interrupted');
+                           error.message.includes('Download interrupted'));
 
         if (shouldRetry) {
           if (onProgress) onProgress(`🔄 Retrying ${path.basename(filepath)} (attempt ${attempt + 1}/${retryAttempts})`);
@@ -842,6 +906,7 @@ async function getExpectedSize(postDir, filename) {
 }
 
 module.exports = {
+  resetHostHealth,
   downloadImage,
   downloadImageWithRetry,
   downloadMedia,
