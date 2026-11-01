@@ -1,6 +1,7 @@
 const { downloadImageWithRetry, checkImageIntegrity } = require('./fileUtils');
 const { delay } = require('./delay');
 const config = require('./config');
+const { PENDING_FULL_IMAGE_STATUS, loadPendingFiles, markPendingFullImage, clearPendingFullImage } = require('./pendingFullImages');
 
 /**
  * Concurrent download manager with semaphore-based limiting
@@ -14,12 +15,13 @@ class ConcurrentDownloader {
     this.stats = {
       completed: 0,
       failed: 0,
-      skipped: 0
+      skipped: 0,
+      pendingFull: 0
     };
   }
 
   async downloadImages(images, postDir, onProgress, onComplete, mirrorContext = null) {
-    this.stats = { completed: 0, failed: 0, skipped: 0 };
+    this.stats = { completed: 0, failed: 0, skipped: 0, pendingFull: 0 };
 
     // Deduplicate by resolved filename to avoid downloading the same file multiple times
     // This catches cases where the same file appears with different CDN hostnames or query params
@@ -102,7 +104,7 @@ class ConcurrentDownloader {
 
   async executeDownload(task) {
     const { imageInfo, index, postDir, onProgress, mirrorContext = null } = task;
-    const { getImageName } = require('./urlUtils');
+    const { getImageName, deriveThumbnailUrl } = require('./urlUtils');
     const fs = require('fs-extra');
     const path = require('path');
     
@@ -111,6 +113,13 @@ class ConcurrentDownloader {
       const thumbnailUrl = typeof imageInfo === 'object' ? imageInfo.thumbnailUrl : null;
       const imageName = getImageName(imageInfo, index);
       const imagePath = path.join(postDir, imageName);
+      const previewUrl = thumbnailUrl || deriveThumbnailUrl(imageUrl) || null;
+      const isPending = Boolean((await loadPendingFiles(postDir))[imageName]);
+
+      if (isPending && await fs.pathExists(imagePath)) {
+        await this.retryFullImage({ imageUrl, imageName, imagePath, postDir, onProgress, mirrorContext });
+        return;
+      }
 
       // Check if file already exists (also check same stem with different ext for .bin files)
       if (!(await fs.pathExists(imagePath)) && imageName.toLowerCase().endsWith('.bin')) {
@@ -209,11 +218,18 @@ class ConcurrentDownloader {
           if (config.shouldShowVerboseProgress()) {
             onProgress(`    ${msg}`);
           }
-        }, thumbnailUrl, mirrorContext); // Pass thumbnail URL for fallback
+        }, previewUrl, mirrorContext); // Pass thumbnail URL for fallback
 
         const actualName = result?.filepath ? path.basename(result.filepath) : imageName;
-        this.stats.completed++;
-        onProgress(`✅ [${this.stats.completed}/${this.stats.completed + this.stats.failed + this.stats.skipped}] Downloaded: ${actualName}`);
+        if (result?.isPreview) {
+          await markPendingFullImage(postDir, imageName, { url: imageUrl, previewUrl });
+          this.stats.pendingFull++;
+          onProgress(`🖼️  [${this.activeSemaphore}/${this.maxConcurrent}] ${PENDING_FULL_IMAGE_STATUS}: ${actualName}`);
+        } else {
+          if (isPending) await clearPendingFullImage(postDir, imageName);
+          this.stats.completed++;
+          onProgress(`✅ [${this.stats.completed}/${this.stats.completed + this.stats.failed + this.stats.skipped}] Downloaded: ${actualName}`);
+        }
 
         // Add delay between downloads to be respectful
         const imageDelay = config.getImageDelay();
@@ -234,6 +250,36 @@ class ConcurrentDownloader {
     } catch (error) {
       this.stats.failed++;
       onProgress(`❌ [${this.activeSemaphore}/${this.maxConcurrent}] Error: ${error.message}`);
+    }
+  }
+
+  /**
+   * Tries to replace a saved preview. The preview stays in place until the full
+   * image has been downloaded completely.
+   */
+  async retryFullImage({ imageUrl, imageName, imagePath, postDir, onProgress, mirrorContext }) {
+    const fs = require('fs-extra');
+    const path = require('path');
+    const tempPath = `${imagePath}.tmp`;
+
+    onProgress(`🔄 [${this.activeSemaphore}/${this.maxConcurrent}] Retrying full image: ${imageName}`);
+    try {
+      await downloadImageWithRetry(imageUrl, tempPath, (msg) => {
+        if (config.shouldShowVerboseProgress()) {
+          onProgress(`    ${msg}`);
+        }
+      }, null, mirrorContext);
+
+      await fs.move(tempPath, imagePath, { overwrite: true });
+      await clearPendingFullImage(postDir, imageName);
+      this.stats.completed++;
+      onProgress(`✅ [${this.activeSemaphore}/${this.maxConcurrent}] Replaced preview with full image: ${path.basename(imagePath)}`);
+    } catch (error) {
+      if (await fs.pathExists(tempPath)) {
+        await fs.remove(tempPath);
+      }
+      this.stats.pendingFull++;
+      onProgress(`🖼️  [${this.activeSemaphore}/${this.maxConcurrent}] Still ${PENDING_FULL_IMAGE_STATUS}: ${imageName} - ${error.message}`);
     }
   }
 

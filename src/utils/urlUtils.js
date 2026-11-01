@@ -400,7 +400,27 @@ function validateFilePath(filepath) {
   return resolved;
 }
 
+/**
+ * Builds the preview URL of a full-size kemono image. Thumbnails exist only for
+ * images and are always JPEG, whatever the extension of the original file.
+ *
+ * @param {string} url - Full-size file URL
+ * @returns {string|null} Thumbnail URL, or null when the file has no thumbnail
+ */
+function deriveThumbnailUrl(url) {
+  try {
+    const { hostname, pathname } = new URL(url);
+    if (hostname !== 'kemono.cr' && !hostname.endsWith('.kemono.cr')) return null;
+
+    const match = pathname.match(/^\/data(\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.(?:jpe?g|png|gif|webp|bmp|avif|tiff?))$/i);
+    return match ? `https://img.kemono.cr/thumbnail/data${match[1]}` : null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
+  deriveThumbnailUrl,
   validateUrl,
   validateFilePath,
   extractUserInfo,

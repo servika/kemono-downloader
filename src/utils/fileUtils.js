@@ -187,6 +187,7 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
   const retryDelay = config.getRetryDelay();
   let lastError = null;
   let mirrorTried = false;
+  let previewTried = false;
 
   // Tried once, and before the thumbnail: a full-size copy beats a preview
   const tryMirror = async () => {
@@ -212,13 +213,40 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
     }
   };
 
+  // Goes through a temp name: previews are always JPEG, so a .png name would
+  // fail the end-of-file check for that format
+  const tryPreview = async () => {
+    if (previewTried || !thumbnailUrl || thumbnailUrl === imageUrl) return null;
+    previewTried = true;
+
+    const previewPath = `${filepath}.preview`;
+    try {
+      await downloadImage(thumbnailUrl, previewPath, onProgress);
+      await fs.move(previewPath, filepath, { overwrite: true });
+      if (onProgress) onProgress(`🖼️  Saved preview, full image pending: ${path.basename(filepath)}`);
+      return { filepath, isPreview: true };
+    } catch (previewError) {
+      if (onProgress) onProgress(`⚠️  Preview failed: ${previewError.message}`);
+      if (await fs.pathExists(previewPath)) {
+        await fs.remove(previewPath);
+      }
+      return null;
+    }
+  };
+
+  // A full-size copy beats a preview
+  const tryFallbacks = async () => {
+    const mirrored = await tryMirror();
+    return mirrored ? mirrored.result : tryPreview();
+  };
+
   const host = getUrlHostname(imageUrl);
 
   // Try downloading full resolution first
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
     if (isHostDown(host)) {
-      const mirrored = await tryMirror();
-      if (mirrored) return mirrored.result;
+      const fallback = await tryFallbacks();
+      if (fallback) return fallback;
       throw lastError || new Error(`Server unreachable: ${host}`);
     }
 
@@ -234,21 +262,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
       }
 
       if (error.response?.status === 404) {
-        const mirrored = await tryMirror();
-        if (mirrored) return mirrored.result;
-      }
-
-      // If we get 404 and have a thumbnail fallback, try it immediately
-      if (error.response?.status === 404 && thumbnailUrl && thumbnailUrl !== imageUrl) {
-        if (onProgress) onProgress(`⚠️  Full resolution not found, trying thumbnail...`);
-        try {
-          await downloadImage(thumbnailUrl, filepath, onProgress);
-          if (onProgress) onProgress(`✅ Downloaded thumbnail (full resolution unavailable)`);
-          return; // Success with thumbnail
-        } catch (thumbnailError) {
-          // Thumbnail also failed, continue with original retry logic
-          lastError = thumbnailError;
-        }
+        const fallback = await tryFallbacks();
+        if (fallback) return fallback;
       }
 
       // Always clean up partial/corrupt files on any download error
@@ -262,8 +277,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
       }
 
       if (attempt === retryAttempts) {
-        const mirrored = await tryMirror();
-        if (mirrored) return mirrored.result;
+        const fallback = await tryFallbacks();
+        if (fallback) return fallback;
         throw lastError;
       } else {
         // Check if we should retry based on error type
@@ -285,8 +300,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
           await delay(retryDelay);
         } else {
           // Don't retry for other client errors
-          const mirrored = await tryMirror();
-          if (mirrored) return mirrored.result;
+          const fallback = await tryFallbacks();
+          if (fallback) return fallback;
           throw lastError;
         }
       }

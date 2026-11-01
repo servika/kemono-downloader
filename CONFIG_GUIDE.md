@@ -106,7 +106,8 @@ Controls browser and HTTP request behavior.
 - **Type**: Array of URLs
 - **Description**: Sites to try, in order, when a file fails to download from `baseUrl`. Tried before falling back to a thumbnail.
 - **Matching**: The same post link must exist on the mirror and link the same SHA-256 file name, so a different file is never downloaded
-- **Unreachable server**: After 3 consecutive connection failures (timeouts, refused connections), a file server is skipped for 5 minutes and files go straight to the mirror. If the mirror has no full-size copy, the file fails right away so it can be retried on the next run
+- **Unreachable server**: After 3 consecutive connection failures (timeouts, refused connections), a file server is skipped for 5 minutes and files go straight to the mirror. If the mirror has no full-size copy, a preview is saved (see below)
+- **Previews**: When neither the primary site nor a mirror can supply the full image, its thumbnail is saved with the status `pending-full-image` (listed in `.pending-full.json` in the post folder). Every run tries the full image again and replaces the preview. The profile stays in `in-progress` until no previews are left. Thumbnails exist only for images, so other files stay failed. This cannot be turned off
 - **Limits**: 1 request/second and 5 active downloads, an identifiable user agent, no cookies. After a 403/429 from a mirror, mirrors are not used until the next run.
 - **Disable**: Set to `[]`
 

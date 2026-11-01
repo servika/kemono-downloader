@@ -3,6 +3,7 @@ const path = require('path');
 const { extractImagesFromPostData } = require('../extractors/imageExtractor');
 const { getImageName } = require('./urlUtils');
 const { loadSizeManifest } = require('./fileUtils');
+const { PENDING_FULL_IMAGE_STATUS, loadPendingFiles } = require('./pendingFullImages');
 
 /**
  * Download verification utilities
@@ -13,6 +14,12 @@ async function isPostAlreadyDownloaded(postDir, postData) {
     // Check if directory exists
     if (!(await fs.pathExists(postDir))) {
       return { downloaded: false, reason: 'Directory does not exist' };
+    }
+
+    // A preview is on disk, so the file checks below would pass
+    const pendingCount = Object.keys(await loadPendingFiles(postDir)).length;
+    if (pendingCount > 0) {
+      return { downloaded: false, reason: `${PENDING_FULL_IMAGE_STATUS}: ${pendingCount} file(s)` };
     }
 
     // Check if metadata exists
@@ -49,11 +56,18 @@ async function verifyAllImagesDownloaded(postDir, expectedImages) {
 
   // Load size manifest for verification
   const sizeManifest = await loadSizeManifest(postDir);
+  const pendingFiles = await loadPendingFiles(postDir);
 
   for (let i = 0; i < expectedImages.length; i++) {
     const imageInfo = expectedImages[i];
     const imageName = getImageName(imageInfo, i);
     const imagePath = path.join(postDir, imageName);
+
+    // Previews are always JPEG, so they would fail the format checks below
+    if (pendingFiles[imageName] && await fs.pathExists(imagePath)) {
+      presentCount++;
+      continue;
+    }
 
     try {
       // Check if file exists
@@ -261,6 +275,10 @@ async function getDownloadStatus(postDir) {
   try {
     if (!(await fs.pathExists(postDir))) {
       return 'not_started';
+    }
+
+    if (Object.keys(await loadPendingFiles(postDir)).length > 0) {
+      return PENDING_FULL_IMAGE_STATUS;
     }
 
     const metadataPath = path.join(postDir, 'post-metadata.json');

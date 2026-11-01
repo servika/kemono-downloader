@@ -6,6 +6,7 @@
 
 const fs = require('fs-extra');
 const path = require('path');
+const { PENDING_FULL_IMAGE_STATUS } = require('./pendingFullImages');
 
 /**
  * Manages download state files stored in each profile's download folder.
@@ -153,6 +154,36 @@ class ProfileStateManager {
       console.log(`  💾 Saved completion state to ${username}/.download-state.json`);
     } catch (error) {
       console.warn(`  ⚠️  Failed to save completion state: ${error.message}`);
+    }
+  }
+
+  /**
+   * Records why a profile stays in-progress after a run
+   *
+   * @param {string} username - Profile username or folder name
+   * @param {Object} metadata
+   * @param {number} metadata.pendingFullImages - Previews waiting for their full image
+   * @returns {Promise<void>}
+   */
+  async markIncomplete(username, metadata) {
+    try {
+      const profileDir = path.join(this.baseDownloadDir, username);
+      await fs.ensureDir(profileDir);
+
+      const pendingFullImages = metadata.pendingFullImages || 0;
+      await fs.writeJson(this.getStateFilePath(username), {
+        completed: false,
+        status: pendingFullImages > 0 ? PENDING_FULL_IMAGE_STATUS : 'in-progress',
+        lastUpdatedAt: new Date().toISOString(),
+        profileUrl: metadata.profileUrl || '',
+        service: metadata.service || '',
+        userId: metadata.userId || '',
+        totalPosts: metadata.totalPosts || 0,
+        pendingFullImages,
+        version: '1.0.0'
+      }, { spaces: 2 });
+    } catch (error) {
+      console.warn(`  ⚠️  Failed to save profile state: ${error.message}`);
     }
   }
 

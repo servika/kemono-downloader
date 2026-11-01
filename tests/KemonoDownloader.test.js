@@ -128,6 +128,7 @@ describe('KemonoDownloader', () => {
         postsDownloaded: 0,
         postsSkipped: 0,
         imagesDownloaded: 0,
+        pendingFullImages: 0,
         errors: 0
       });
     });
@@ -534,6 +535,51 @@ describe('KemonoDownloader', () => {
 
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Error processing profile'));
       expect(downloader.stats.errors).toBe(1);
+    });
+
+    describe('profiles with previews', () => {
+      const profileUrl = 'https://kemono.cr/patreon/user/123';
+      let commentProfile;
+
+      beforeEach(() => {
+        commentProfile = jest.fn().mockResolvedValue();
+        ProfileFileManager.mockImplementation(() => ({
+          readProfiles: jest.fn().mockResolvedValue([profileUrl]),
+          commentProfile,
+          getStatistics: jest.fn().mockResolvedValue({ total: 1, active: 1, completed: 0 })
+        }));
+        downloader = new KemonoDownloader();
+        downloader.getProfilePosts = jest.fn().mockResolvedValue([
+          { id: '1', url: `${profileUrl}/post/1`, username: 'user1' }
+        ]);
+        downloader.downloadPost = jest.fn().mockResolvedValue();
+        downloader._finalizeProfile = jest.fn().mockResolvedValue();
+      });
+
+      test('should leave the profile in-progress while previews are pending', async () => {
+        fs.readdir.mockResolvedValue(['1']);
+        fs.readJson.mockResolvedValue({ status: 'pending-full-image', files: { 'a.jpg': {}, 'b.jpg': {} } });
+
+        await downloader.processProfilesFile('profiles.txt');
+
+        expect(downloader._finalizeProfile).not.toHaveBeenCalled();
+        expect(downloader.stats.profilesProcessed).toBe(0);
+        expect(console.log).toHaveBeenCalledWith(expect.stringContaining('pending-full-image: 2 preview(s)'));
+        expect(fs.writeJson).toHaveBeenCalledWith(
+          expect.stringContaining('.download-state.json'),
+          expect.objectContaining({ completed: false, status: 'pending-full-image', pendingFullImages: 2 }),
+          expect.anything()
+        );
+      });
+
+      test('should complete the profile once no previews are left', async () => {
+        fs.readdir.mockResolvedValue(['1']);
+        fs.readJson.mockRejectedValue(new Error('ENOENT'));
+
+        await downloader.processProfilesFile('profiles.txt');
+
+        expect(downloader._finalizeProfile).toHaveBeenCalledTimes(1);
+      });
     });
 
     test('should skip profiles already in completed registry', async () => {

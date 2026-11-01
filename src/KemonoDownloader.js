@@ -19,6 +19,7 @@ const { downloadDropboxLink, formatBytes: formatBytesDropbox } = require('./util
 const ProfileStateManager = require('./utils/profileStateManager');
 const CompletedProfilesRegistry = require('./utils/completedProfilesRegistry');
 const ProfileFileManager = require('./utils/profileFileManager');
+const { PENDING_FULL_IMAGE_STATUS, countPendingInProfile } = require('./utils/pendingFullImages');
 
 class KemonoDownloader {
   constructor() {
@@ -32,6 +33,7 @@ class KemonoDownloader {
       postsDownloaded: 0,
       postsSkipped: 0,
       imagesDownloaded: 0,
+      pendingFullImages: 0,
       errors: 0
     };
   }
@@ -370,7 +372,8 @@ class KemonoDownloader {
           (stats) => {
             this.stats.imagesDownloaded += stats.completed;
             this.stats.errors += stats.failed;
-            console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed`);
+            this.stats.pendingFullImages += stats.pendingFull || 0;
+            console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed, ${stats.pendingFull || 0} ${PENDING_FULL_IMAGE_STATUS}`);
           },
           { postUrl: post.url }
         );
@@ -380,7 +383,11 @@ class KemonoDownloader {
         console.log(`  💾 Saved HTML content with localized image paths`);
 
         this.stats.postsDownloaded++;
-        console.log(`  ✅ Post ${post.id} completed - saved to ${postDir}`);
+        if (downloadStats?.pendingFull > 0) {
+          console.log(`  🖼️  Post ${post.id} ${PENDING_FULL_IMAGE_STATUS}: ${downloadStats.pendingFull} preview(s) saved to ${postDir}`);
+        } else {
+          console.log(`  ✅ Post ${post.id} completed - saved to ${postDir}`);
+        }
         return;
       } else {
         // No images, just save the HTML as-is
@@ -431,7 +438,8 @@ class KemonoDownloader {
           (stats) => {
             this.stats.imagesDownloaded += stats.completed;
             this.stats.errors += stats.failed;
-            console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed`);
+            this.stats.pendingFullImages += stats.pendingFull || 0;
+            console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed, ${stats.pendingFull || 0} ${PENDING_FULL_IMAGE_STATUS}`);
           },
           { postUrl: post.url }
         );
@@ -527,9 +535,21 @@ class KemonoDownloader {
           // A CDN outage makes every file fail while the post list still loads
           // fine. Marking such a run complete would move the folder to
           // completed/ and comment out profiles.txt, so the profile would be
-          // skipped once the files are reachable again.
-          if (!this._isRunSuccessful(profileImages, profileErrors)) {
-            console.log(`  ⚠️  Profile left in-progress: ${profileErrors} error(s), only ${profileImages} file(s) downloaded`);
+          // skipped once the files are reachable again. Previews count the same
+          // way: a preview is not the file that was asked for.
+          const pendingFullImages = await countPendingInProfile(path.join(this.inProgressDir, username));
+          const runSuccessful = this._isRunSuccessful(profileImages, profileErrors);
+          if (pendingFullImages > 0 || !runSuccessful) {
+            await stateManager.markIncomplete(username, {
+              profileUrl, service: userInfo.service, userId: userInfo.userId,
+              totalPosts: posts.length, pendingFullImages
+            });
+            if (pendingFullImages > 0) {
+              console.log(`  🖼️  Profile ${PENDING_FULL_IMAGE_STATUS}: ${pendingFullImages} preview(s) waiting for full images`);
+            }
+            if (!runSuccessful) {
+              console.log(`  ⚠️  Profile left in-progress: ${profileErrors} error(s), only ${profileImages} file(s) downloaded`);
+            }
             console.log(`     Not marking as completed — run again once downloads succeed`);
             continue;
           }
@@ -658,12 +678,18 @@ class KemonoDownloader {
     console.log(`📄 Posts downloaded: ${this.stats.postsDownloaded}`);
     console.log(`⏭️  Posts skipped: ${this.stats.postsSkipped}`);
     console.log(`🖼️  Images downloaded: ${this.stats.imagesDownloaded}`);
+    console.log(`⏳ Previews with status ${PENDING_FULL_IMAGE_STATUS}: ${this.stats.pendingFullImages || 0}`);
     console.log(`❌ Errors encountered: ${this.stats.errors}`);
     console.log('='.repeat(50));
     
-    if (this.stats.errors === 0) {
+    const pendingFullImages = this.stats.pendingFullImages || 0;
+    if (pendingFullImages > 0) {
+      console.log('⏳ Some full images are still unavailable. Run again once they can be downloaded.');
+    }
+
+    if (this.stats.errors === 0 && pendingFullImages === 0) {
       console.log('🎉 All downloads completed successfully!');
-    } else {
+    } else if (this.stats.errors > 0) {
       console.log('⚠️  Some errors occurred during download. Check logs above.');
     }
   }

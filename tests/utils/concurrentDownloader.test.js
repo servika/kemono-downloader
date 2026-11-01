@@ -49,7 +49,8 @@ describe('ConcurrentDownloader', () => {
       expect(downloader.stats).toEqual({
         completed: 0,
         failed: 0,
-        skipped: 0
+        skipped: 0,
+        pendingFull: 0
       });
     });
   });
@@ -63,7 +64,8 @@ describe('ConcurrentDownloader', () => {
       expect(onComplete).toHaveBeenCalledWith({
         completed: 0,
         failed: 0,
-        skipped: 0
+        skipped: 0,
+        pendingFull: 0
       });
       expect(result).toBeUndefined();
     });
@@ -85,7 +87,8 @@ describe('ConcurrentDownloader', () => {
       expect(onComplete).toHaveBeenCalledWith({
         completed: 2,
         failed: 0,
-        skipped: 0
+        skipped: 0,
+        pendingFull: 0
       });
     });
 
@@ -106,7 +109,8 @@ describe('ConcurrentDownloader', () => {
       expect(onComplete).toHaveBeenCalledWith({
         completed: 0,
         failed: 0,
-        skipped: 1
+        skipped: 1,
+        pendingFull: 0
       });
     });
 
@@ -125,7 +129,8 @@ describe('ConcurrentDownloader', () => {
       expect(onComplete).toHaveBeenCalledWith({
         completed: 1,
         failed: 0,
-        skipped: 0
+        skipped: 0,
+        pendingFull: 0
       });
     });
 
@@ -145,7 +150,8 @@ describe('ConcurrentDownloader', () => {
       expect(onComplete).toHaveBeenCalledWith({
         completed: 0,
         failed: 1,
-        skipped: 0
+        skipped: 0,
+        pendingFull: 0
       });
     });
 
@@ -170,12 +176,15 @@ describe('ConcurrentDownloader', () => {
         });
       });
 
+      // Waiting for a slot must take timer time: an instantly resolved delay
+      // would spin in microtasks and never let the timers advance
+      delay.mockImplementation(ms => new Promise(resolve => setTimeout(resolve, ms)));
+
       const downloadPromise = downloader.downloadImages(images, '/test/dir');
 
       // Advance timers in controlled steps to simulate concurrent execution
       for (let i = 0; i < 15; i++) {
-        await Promise.resolve(); // Allow microtasks to run
-        jest.advanceTimersByTime(50);
+        await jest.advanceTimersByTimeAsync(50); // Also runs pending microtasks
       }
 
       await downloadPromise;
@@ -297,7 +306,8 @@ describe('ConcurrentDownloader', () => {
         stats: {
           completed: 5,
           failed: 0,
-          skipped: 0
+          skipped: 0,
+        pendingFull: 0
         }
       });
     });
@@ -351,7 +361,8 @@ describe('ConcurrentDownloader', () => {
       expect(onComplete).toHaveBeenCalledWith({
         completed: 0,
         failed: 1,
-        skipped: 0
+        skipped: 0,
+        pendingFull: 0
       });
     });
   });

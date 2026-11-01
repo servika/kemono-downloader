@@ -388,6 +388,36 @@ describe('fileUtils', () => {
         expect(requestedUrls()).toEqual([KEMONO, THUMB]);
       });
 
+      test('should save the preview through a temp name and report it as a preview', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(null);
+        axios.mockRejectedValueOnce(httpError(404)).mockResolvedValueOnce(successfulResponse());
+
+        const result = await downloadImageWithRetry(KEMONO, '/test/image.png', jest.fn(), THUMB, POST);
+
+        expect(result).toEqual({ filepath: '/test/image.png', isPreview: true });
+        expect(fs.move).toHaveBeenCalledWith('/test/image.png.preview', '/test/image.png', { overwrite: true });
+      });
+
+      test('should not report a mirror download as a preview', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(MIRROR);
+        axios.mockRejectedValueOnce(httpError(404)).mockResolvedValueOnce(successfulResponse());
+
+        const result = await downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), THUMB, POST);
+
+        expect(result?.isPreview).toBeUndefined();
+        expect(requestedUrls()).toEqual([KEMONO, MIRROR]);
+      });
+
+      test('should keep the original error and clean up when the preview fails', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(null);
+        axios.mockRejectedValueOnce(httpError(404)).mockRejectedValueOnce(httpError(500));
+        fs.pathExists.mockResolvedValue(true);
+
+        await expect(downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), THUMB, POST)).rejects.toThrow('HTTP 404');
+
+        expect(fs.remove).toHaveBeenCalledWith('/test/image.jpg.preview');
+      });
+
       test('should report the original error and clean up when the mirror download fails', async () => {
         const refused = httpError(403);
         mirrorResolver.resolveMirrorUrl.mockResolvedValue(MIRROR);
@@ -432,12 +462,23 @@ describe('fileUtils', () => {
           expect(requestedUrls()).toEqual([OTHER_MIRROR]);
         });
 
-        test('should fail fast without touching the server when the mirror lacks the file', async () => {
+        test('should save a preview without touching the server when the mirror lacks the file', async () => {
+          await markServerDown();
+          mirrorResolver.resolveMirrorUrl.mockResolvedValueOnce(null);
+          axios.mockResolvedValueOnce(successfulResponse());
+
+          const result = await downloadImageWithRetry(OTHER, '/test/other.jpg', jest.fn(), THUMB, POST);
+
+          expect(result).toEqual({ filepath: '/test/other.jpg', isPreview: true });
+          expect(requestedUrls()).toEqual([THUMB]);
+        });
+
+        test('should fail fast when there is no mirror copy and no preview', async () => {
           await markServerDown();
           mirrorResolver.resolveMirrorUrl.mockResolvedValueOnce(null);
           const onProgress = jest.fn();
 
-          await expect(downloadImageWithRetry(OTHER, '/test/other.jpg', onProgress, THUMB, POST))
+          await expect(downloadImageWithRetry(OTHER, '/test/other.jpg', onProgress, null, POST))
             .rejects.toThrow('Server unreachable: n1.kemono.cr');
 
           expect(axios).not.toHaveBeenCalled();
@@ -615,8 +656,7 @@ describe('fileUtils', () => {
       expect(axios).toHaveBeenNthCalledWith(2, expect.objectContaining({
         url: 'https://example.com/thumbnail/image.jpg'
       }));
-      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('trying thumbnail'));
-      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Downloaded thumbnail'));
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Saved preview, full image pending'));
     });
 
     test('should not try thumbnail if full resolution succeeds', async () => {
@@ -664,10 +704,10 @@ describe('fileUtils', () => {
       ).rejects.toThrow('Not found');
 
       expect(axios).toHaveBeenCalledTimes(2);
-      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('trying thumbnail'));
+      expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Preview failed'));
     });
 
-    test('should not try thumbnail for non-404 errors', async () => {
+    test('should try the thumbnail only after retries on non-404 errors', async () => {
       const serverError = new Error('Server error');
       serverError.response = { status: 500 };
 
@@ -682,12 +722,13 @@ describe('fileUtils', () => {
         )
       ).rejects.toThrow('Server error');
 
-      // Should retry 3 times on 500 error, but not try thumbnail
-      expect(axios).toHaveBeenCalledTimes(3);
-      // All calls should be to the full resolution URL
-      expect(axios).toHaveBeenCalledWith(expect.objectContaining({
-        url: 'https://example.com/data/image.jpg'
-      }));
+      // 3 attempts on the full image, then the thumbnail
+      expect(axios.mock.calls.map(([options]) => options.url)).toEqual([
+        'https://example.com/data/image.jpg',
+        'https://example.com/data/image.jpg',
+        'https://example.com/data/image.jpg',
+        'https://example.com/thumbnail/image.jpg'
+      ]);
     });
 
     test('should not try thumbnail if thumbnailUrl is null', async () => {
