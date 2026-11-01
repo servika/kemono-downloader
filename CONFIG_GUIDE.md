@@ -102,6 +102,13 @@ Controls browser and HTTP request behavior.
   }
   ```
 
+#### `mirrors` (default: `["https://pawchive.pw", "https://pawchive.st"]`)
+- **Type**: Array of URLs
+- **Description**: Sites to try, in order, when a file fails to download from `baseUrl`. Tried before falling back to a thumbnail.
+- **Matching**: The same post link must exist on the mirror and link the same SHA-256 file name, so a different file is never downloaded
+- **Limits**: 1 request/second and 5 active downloads, an identifiable user agent, no cookies. After a 403/429 from a mirror, mirrors are not used until the next run.
+- **Disable**: Set to `[]`
+
 #### `timeout` (default: `45000`)
 - **Type**: Milliseconds
 - **Description**: Maximum time to wait for a request to complete

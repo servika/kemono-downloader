@@ -185,6 +185,23 @@ describe('ConcurrentDownloader', () => {
       jest.useRealTimers();
     });
 
+    test('should pass the post context on for mirror fallback', async () => {
+      const context = { postUrl: 'https://kemono.cr/patreon/user/1/post/2' };
+      fs.pathExists.mockResolvedValue(false);
+      downloadImageWithRetry.mockResolvedValue();
+      getImageName.mockReturnValue('image_0.jpg');
+
+      await downloader.downloadImages(['https://example.com/image1.jpg'], '/test', jest.fn(), jest.fn(), context);
+
+      expect(downloadImageWithRetry).toHaveBeenCalledWith(
+        'https://example.com/image1.jpg',
+        expect.stringContaining('image_0.jpg'),
+        expect.any(Function),
+        null,
+        context
+      );
+    });
+
     test('should handle string URLs', async () => {
       const images = ['https://example.com/image1.jpg'];
       
@@ -198,7 +215,8 @@ describe('ConcurrentDownloader', () => {
         'https://example.com/image1.jpg',
         expect.stringContaining('image_0.jpg'),
         expect.any(Function),
-        null // thumbnail URL
+        null, // thumbnail URL
+        null // mirror context
       );
     });
 

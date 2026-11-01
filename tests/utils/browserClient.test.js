@@ -48,6 +48,28 @@ describe('browserClient', () => {
     console.log.mockRestore();
   });
 
+  test('initialize should not send configured cookies to a mirror', async () => {
+    const config = require('../../src/utils/config');
+    const baseUrl = jest.spyOn(config, 'getBaseUrl').mockReturnValue('https://pawchive.pw');
+    const cookies = jest.spyOn(config, 'getCookies').mockReturnValue({ session: 'secret' });
+
+    await browserClient.initialize();
+
+    expect(mockPage.setCookie).not.toHaveBeenCalled();
+    baseUrl.mockRestore();
+    cookies.mockRestore();
+  });
+
+  test('initialize should send configured cookies to the primary site', async () => {
+    const config = require('../../src/utils/config');
+    const cookies = jest.spyOn(config, 'getCookies').mockReturnValue({ session: 'secret' });
+
+    await browserClient.initialize();
+
+    expect(mockPage.setCookie).toHaveBeenCalledWith(expect.objectContaining({ name: 'session', domain: 'kemono.cr' }));
+    cookies.mockRestore();
+  });
+
   test('initialize should configure browser and page', async () => {
     await browserClient.initialize();
 

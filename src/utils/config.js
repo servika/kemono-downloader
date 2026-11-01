@@ -27,6 +27,7 @@ const DEFAULT_CONFIG = {
   },
   api: {
     baseUrl: "https://kemono.cr",
+    mirrors: ["https://pawchive.pw", "https://pawchive.st"],
     timeout: 30000,
     userAgent: "Mozilla/5.0 (compatible; kemono-downloader)",
     cookies: {
@@ -197,6 +198,11 @@ class Config {
 
   getBaseUrl() {
     return this.get('api.baseUrl') || 'https://kemono.cr';
+  }
+
+  getMirrors() {
+    const mirrors = this.get('api.mirrors');
+    return Array.isArray(mirrors) ? mirrors : DEFAULT_CONFIG.api.mirrors;
   }
 
   getCookies() {

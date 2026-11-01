@@ -283,7 +283,7 @@ describe('htmlParser', () => {
       // Check first image with /thumbnail/ pattern
       const thumbnailImage = images.find(m => m.thumbnailUrl && m.thumbnailUrl.includes('/thumbnail/'));
       expect(thumbnailImage).toBeDefined();
-      expect(thumbnailImage.url).toBe('https://kemono.cr/data/data/image1.jpg');
+      expect(thumbnailImage.url).toBe('https://kemono.cr/data/image1.jpg');
       expect(thumbnailImage.thumbnailUrl).toBe('https://kemono.cr/thumbnail/data/image1.jpg');
 
       // Check image with _thumb pattern

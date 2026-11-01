@@ -6,6 +6,7 @@ const cheerio = require('cheerio');
 const config = require('./config');
 const { delay } = require('./delay');
 const { getImageName } = require('./urlUtils');
+const { MIRROR_USER_AGENT, isMirrorUrl, withMirrorSlot, reportMirrorFailure, resolveMirrorUrl } = require('./mirrorResolver');
 
 /**
  * File and download utilities for images, videos, and archives
@@ -129,15 +130,37 @@ async function downloadMedia(mediaUrl, filepath, onProgress) {
   return downloadImage(mediaUrl, filepath, onProgress);
 }
 
-async function downloadMediaWithRetry(mediaUrl, filepath, onProgress, thumbnailUrl = null) {
+async function downloadMediaWithRetry(mediaUrl, filepath, onProgress, thumbnailUrl = null, mirrorContext = null) {
   // Use the same retry logic for both images and videos
-  return downloadImageWithRetry(mediaUrl, filepath, onProgress, thumbnailUrl);
+  return downloadImageWithRetry(mediaUrl, filepath, onProgress, thumbnailUrl, mirrorContext);
 }
 
-async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailUrl = null) {
+async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailUrl = null, mirrorContext = null) {
   const retryAttempts = config.getRetryAttempts();
   const retryDelay = config.getRetryDelay();
   let lastError = null;
+  let mirrorTried = false;
+
+  // Tried once, and before the thumbnail: a full-size copy beats a preview
+  const tryMirror = async () => {
+    if (mirrorTried || !mirrorContext?.postUrl) return null;
+    mirrorTried = true;
+
+    const mirrorUrl = await resolveMirrorUrl(imageUrl, mirrorContext.postUrl, onProgress);
+    if (!mirrorUrl) return null;
+
+    if (onProgress) onProgress(`🪞 Trying mirror: ${new URL(mirrorUrl).hostname}`);
+    try {
+      const result = await withMirrorSlot(() => downloadImage(mirrorUrl, filepath, onProgress));
+      return { result };
+    } catch (mirrorError) {
+      reportMirrorFailure(mirrorError, onProgress);
+      if (await fs.pathExists(filepath)) {
+        await fs.remove(filepath);
+      }
+      return null;
+    }
+  };
 
   // Try downloading full resolution first
   for (let attempt = 1; attempt <= retryAttempts; attempt++) {
@@ -146,6 +169,11 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
       return result; // Success, exit retry loop - result includes actual filepath
     } catch (error) {
       lastError = error;
+
+      if (error.response?.status === 404) {
+        const mirrored = await tryMirror();
+        if (mirrored) return mirrored.result;
+      }
 
       // If we get 404 and have a thumbnail fallback, try it immediately
       if (error.response?.status === 404 && thumbnailUrl && thumbnailUrl !== imageUrl) {
@@ -171,6 +199,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
       }
 
       if (attempt === retryAttempts) {
+        const mirrored = await tryMirror();
+        if (mirrored) return mirrored.result;
         throw lastError;
       } else {
         // Check if we should retry based on error type
@@ -191,6 +221,8 @@ async function downloadImageWithRetry(imageUrl, filepath, onProgress, thumbnailU
           await delay(retryDelay);
         } else {
           // Don't retry for other client errors
+          const mirrored = await tryMirror();
+          if (mirrored) return mirrored.result;
           throw lastError;
         }
       }
@@ -218,7 +250,9 @@ async function downloadImage(imageUrl, filepath, onProgress) {
       responseType: 'stream',
       timeout: timeout,
       headers: {
-        'User-Agent': config.get('api.userAgent') || 'Mozilla/5.0 (compatible; kemono-downloader)'
+        'User-Agent': isMirrorUrl(imageUrl)
+          ? MIRROR_USER_AGENT
+          : config.get('api.userAgent') || 'Mozilla/5.0 (compatible; kemono-downloader)'
       },
       ...getAxiosProxyOptions(imageUrl)
     });

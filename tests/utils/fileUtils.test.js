@@ -14,11 +14,13 @@ const path = require('path');
 const config = require('../../src/utils/config');
 const { delay } = require('../../src/utils/delay');
 const { Readable, PassThrough } = require('stream');
+const mirrorResolver = require('../../src/utils/mirrorResolver');
 
 jest.mock('axios');
 jest.mock('fs-extra');
 jest.mock('../../src/utils/config');
 jest.mock('../../src/utils/delay');
+jest.mock('../../src/utils/mirrorResolver');
 
 describe('fileUtils', () => {
   // Helper function to create a proper mock stream setup for successful downloads
@@ -309,6 +311,101 @@ describe('fileUtils', () => {
       
       expect(axios).toHaveBeenCalledTimes(2);
       expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Retrying'));
+    });
+
+    describe('mirror fallback', () => {
+      const POST = { postUrl: 'https://kemono.cr/patreon/user/1/post/2' };
+      const KEMONO = 'https://n1.kemono.cr/data/aa/aa/file.jpg';
+      const MIRROR = 'https://n2.pawchive.pw/data/aa/aa/file.jpg';
+      const THUMB = 'https://img.kemono.cr/thumbnail/data/aa/aa/file.jpg';
+      const httpError = (status) => Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+      const successfulResponse = () => {
+        fs.createWriteStream.mockImplementation(() => new PassThrough());
+        fs.ensureDir.mockResolvedValue();
+        return { data: Readable.from([Buffer.alloc(10)]), headers: { 'content-length': '10' } };
+      };
+      const requestedUrls = () => axios.mock.calls.map(([options]) => options.url);
+
+      beforeEach(() => {
+        axios.mockReset();
+        mirrorResolver.resolveMirrorUrl.mockReset();
+        mirrorResolver.isMirrorUrl.mockImplementation(url => url === MIRROR);
+        mirrorResolver.withMirrorSlot.mockImplementation(request => request());
+      });
+
+      test('should use the mirror on 404 before the thumbnail', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(MIRROR);
+        axios.mockRejectedValueOnce(httpError(404)).mockResolvedValueOnce(successfulResponse());
+
+        await downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), THUMB, POST);
+
+        expect(requestedUrls()).toEqual([KEMONO, MIRROR]);
+        expect(mirrorResolver.resolveMirrorUrl).toHaveBeenCalledWith(KEMONO, POST.postUrl, expect.any(Function));
+        expect(mirrorResolver.withMirrorSlot).toHaveBeenCalledTimes(1);
+      });
+
+      test('should use the mirror after retries are exhausted', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(MIRROR);
+        axios
+          .mockRejectedValueOnce(httpError(403))
+          .mockRejectedValueOnce(httpError(403))
+          .mockRejectedValueOnce(httpError(403))
+          .mockResolvedValueOnce(successfulResponse());
+
+        await downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), null, POST);
+
+        expect(requestedUrls()).toEqual([KEMONO, KEMONO, KEMONO, MIRROR]);
+      });
+
+      test('should use the mirror on errors that are not retried', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(MIRROR);
+        axios.mockRejectedValueOnce(new Error('connect ECONNREFUSED')).mockResolvedValueOnce(successfulResponse());
+
+        await downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), null, POST);
+
+        expect(requestedUrls()).toEqual([KEMONO, MIRROR]);
+      });
+
+      test('should identify itself to the mirror but not to the primary site', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(MIRROR);
+        config.get.mockReturnValue('Primary-UA');
+        axios.mockRejectedValueOnce(httpError(404)).mockResolvedValueOnce(successfulResponse());
+
+        await downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), null, POST);
+
+        expect(axios.mock.calls[0][0].headers['User-Agent']).toBe('Primary-UA');
+        expect(axios.mock.calls[1][0].headers).toEqual({ 'User-Agent': mirrorResolver.MIRROR_USER_AGENT });
+      });
+
+      test('should fall back to the thumbnail when the mirror lacks the file', async () => {
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(null);
+        axios.mockRejectedValueOnce(httpError(404)).mockResolvedValueOnce(successfulResponse());
+
+        await downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), THUMB, POST);
+
+        expect(requestedUrls()).toEqual([KEMONO, THUMB]);
+      });
+
+      test('should report the original error and clean up when the mirror download fails', async () => {
+        const refused = httpError(403);
+        mirrorResolver.resolveMirrorUrl.mockResolvedValue(MIRROR);
+        fs.pathExists.mockResolvedValue(true);
+        axios.mockRejectedValueOnce(httpError(404)).mockRejectedValueOnce(refused);
+
+        await expect(downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn(), null, POST)).rejects.toThrow('HTTP 404');
+
+        expect(mirrorResolver.reportMirrorFailure).toHaveBeenCalledWith(refused, expect.any(Function));
+        expect(fs.remove).toHaveBeenCalledWith('/test/image.jpg');
+        expect(mirrorResolver.resolveMirrorUrl).toHaveBeenCalledTimes(1);
+      });
+
+      test('should not look for a mirror without post context', async () => {
+        axios.mockRejectedValueOnce(httpError(404));
+
+        await expect(downloadImageWithRetry(KEMONO, '/test/image.jpg', jest.fn())).rejects.toThrow('HTTP 404');
+
+        expect(mirrorResolver.resolveMirrorUrl).not.toHaveBeenCalled();
+      });
     });
 
     test('should not retry on 404 errors', async () => {

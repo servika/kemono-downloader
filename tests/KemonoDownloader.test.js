@@ -305,7 +305,8 @@ describe('KemonoDownloader', () => {
         mockImages,
         expect.any(String),
         expect.any(Function),
-        expect.any(Function)
+        expect.any(Function),
+        { postUrl: mockPost.url }
       );
       expect(downloader.stats.postsDownloaded).toBe(1);
       expect(fetchPostFromAPI).not.toHaveBeenCalled();
@@ -379,7 +380,8 @@ describe('KemonoDownloader', () => {
         mockImages,
         expect.any(String),
         expect.any(Function),
-        expect.any(Function)
+        expect.any(Function),
+        { postUrl: mockPost.url }
       );
       expect(downloader.stats.postsDownloaded).toBe(1);
     });

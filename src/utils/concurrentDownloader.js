@@ -18,7 +18,7 @@ class ConcurrentDownloader {
     };
   }
 
-  async downloadImages(images, postDir, onProgress, onComplete) {
+  async downloadImages(images, postDir, onProgress, onComplete, mirrorContext = null) {
     this.stats = { completed: 0, failed: 0, skipped: 0 };
 
     // Deduplicate by resolved filename to avoid downloading the same file multiple times
@@ -54,7 +54,7 @@ class ConcurrentDownloader {
 
     // Create download tasks from deduplicated list
     const downloadTasks = uniqueImages.map((imageInfo, index) =>
-      this.createDownloadTask(imageInfo, index, postDir, onProgress)
+      this.createDownloadTask(imageInfo, index, postDir, onProgress, mirrorContext)
     );
 
     // Process downloads with concurrency limit
@@ -68,12 +68,13 @@ class ConcurrentDownloader {
     return this.stats;
   }
 
-  createDownloadTask(imageInfo, index, postDir, onProgress) {
+  createDownloadTask(imageInfo, index, postDir, onProgress, mirrorContext = null) {
     return {
       imageInfo,
       index,
       postDir,
-      onProgress: onProgress || (() => {})
+      onProgress: onProgress || (() => {}),
+      mirrorContext
     };
   }
 
@@ -100,7 +101,7 @@ class ConcurrentDownloader {
   }
 
   async executeDownload(task) {
-    const { imageInfo, index, postDir, onProgress } = task;
+    const { imageInfo, index, postDir, onProgress, mirrorContext = null } = task;
     const { getImageName } = require('./urlUtils');
     const fs = require('fs-extra');
     const path = require('path');
@@ -147,7 +148,7 @@ class ConcurrentDownloader {
                   if (config.shouldShowVerboseProgress()) {
                     onProgress(`    ${msg}`);
                   }
-                }, null); // Don't use thumbnail fallback for upgrade check
+                }, null, mirrorContext); // Don't use thumbnail fallback for upgrade check
 
                 // Check if the new file is actually larger (better quality)
                 const newStats = await fs.stat(tempPath);
@@ -208,7 +209,7 @@ class ConcurrentDownloader {
           if (config.shouldShowVerboseProgress()) {
             onProgress(`    ${msg}`);
           }
-        }, thumbnailUrl); // Pass thumbnail URL for fallback
+        }, thumbnailUrl, mirrorContext); // Pass thumbnail URL for fallback
 
         const actualName = result?.filepath ? path.basename(result.filepath) : imageName;
         this.stats.completed++;

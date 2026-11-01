@@ -222,7 +222,8 @@ function extractMediaFromPostHTML($, postUrl) {
 
         // Convert to full resolution URL
         if (fullUrl.includes('/thumbnail/')) {
-          fullUrl = fullUrl.replace('/thumbnail/', '/data/');
+          // Thumbnail paths are /thumbnail/data/aa/bb/hash.ext, so don't double the /data/ segment
+          fullUrl = fullUrl.replace(/\/thumbnail\/(?:data\/)?/, '/data/');
         }
         if (fullUrl.includes('_thumb.')) {
           fullUrl = fullUrl.replace('_thumb.', '.');

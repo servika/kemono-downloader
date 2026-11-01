@@ -3,6 +3,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { delay } = require('./delay');
 const config = require('./config');
 const { getBrowserProxyArgs } = require('./proxyAgent');
+const { isMirrorUrl } = require('./mirrorResolver');
 
 puppeteer.use(StealthPlugin());
 
@@ -58,7 +59,8 @@ class BrowserClient {
     const domain = new URL(baseUrl).hostname;
 
     // Set authentication cookies from config
-    const cookies = config.getCookies();
+    // Configured cookies belong to the primary site: never hand them to a mirror
+    const cookies = isMirrorUrl(baseUrl) ? {} : config.getCookies();
     const cookieEntries = Object.entries(cookies || {}).filter(([, value]) => value);
     if (cookieEntries.length > 0) {
       console.log(`🍪 Setting ${cookieEntries.length} authentication cookie(s)...`);

@@ -371,7 +371,8 @@ class KemonoDownloader {
             this.stats.imagesDownloaded += stats.completed;
             this.stats.errors += stats.failed;
             console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed`);
-          }
+          },
+          { postUrl: post.url }
         );
 
         // Save HTML content AFTER downloading images so we can localize URLs
@@ -431,7 +432,8 @@ class KemonoDownloader {
             this.stats.imagesDownloaded += stats.completed;
             this.stats.errors += stats.failed;
             console.log(`  📊 Batch complete: ${stats.completed} downloaded, ${stats.skipped} skipped, ${stats.failed} failed`);
-          }
+          },
+          { postUrl: post.url }
         );
 
         // Verify all images were downloaded correctly after batch completion
